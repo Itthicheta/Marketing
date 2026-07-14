@@ -26,71 +26,50 @@
     }
   }
   * { box-sizing: border-box; margin: 0; }
-  body {
-    background: var(--page); color: var(--ink-1);
-    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-  }
-  header {
-    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
-    padding: 18px 24px 0;
-  }
+  body { background: var(--page); color: var(--ink-1); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; padding: 18px 24px 0; }
   header h1 { font-size: 18px; }
-  .synth-badge {
-    font-size: 12px; color: var(--ink-2); border: 1px solid var(--border);
-    border-radius: 999px; padding: 2px 10px;
-  }
+  .synth-badge { font-size: 12px; color: var(--ink-2); border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; }
   nav { display: flex; gap: 4px; padding: 10px 24px 0; flex-wrap: wrap; }
-  nav button {
-    font: inherit; font-size: 13px; color: var(--ink-2); background: none;
-    border: none; border-bottom: 2px solid transparent; padding: 6px 10px; cursor: pointer;
-  }
+  nav button { font: inherit; font-size: 13px; color: var(--ink-2); background: none; border: none; border-bottom: 2px solid transparent; padding: 6px 10px; cursor: pointer; }
   nav button.active { color: var(--ink-1); border-bottom-color: var(--s1); font-weight: 600; }
   main { padding: 16px 24px 48px; max-width: 1200px; }
   section.page { display: none; }
   section.page.active { display: block; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
-  .tile {
-    background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
-    padding: 14px 16px;
-  }
+  .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
   .tile .label { font-size: 12px; color: var(--ink-2); }
   .tile .value { font-size: 26px; font-weight: 650; margin-top: 2px; }
   .tile .delta { font-size: 12px; color: var(--good-text); }
-  .card {
-    background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
-    padding: 16px; margin-bottom: 16px; overflow-x: auto;
-  }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; overflow-x: auto; }
   .card h2 { font-size: 14px; margin-bottom: 2px; }
   .card .sub { font-size: 12px; color: var(--ink-muted); margin-bottom: 12px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
   .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin: 8px 0 4px; }
-  .legend span::before {
-    content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px;
-    margin-right: 5px; background: var(--c);
-  }
+  .legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; background: var(--c); }
   .controls { display: flex; gap: 6px; margin-bottom: 10px; }
-  .controls button {
-    font: inherit; font-size: 12px; padding: 4px 12px; cursor: pointer;
-    background: none; color: var(--ink-2); border: 1px solid var(--border); border-radius: 999px;
-  }
+  .controls button { font: inherit; font-size: 12px; padding: 4px 12px; cursor: pointer; background: none; color: var(--ink-2); border: 1px solid var(--border); border-radius: 999px; }
   .controls button.active { color: var(--ink-1); border-color: var(--s1); font-weight: 600; }
   table { border-collapse: collapse; font-size: 13px; width: 100%; }
   th { text-align: left; color: var(--ink-2); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--grid); }
   td { padding: 6px 10px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
   td.num, th.num { text-align: right; }
-  .heat td.cell { text-align: right; min-width: 52px; }
+  .heat td.cell { text-align: right; min-width: 48px; }
   svg text { fill: var(--ink-muted); font: 11px system-ui, sans-serif; }
   svg .dl { fill: var(--ink-2); font-weight: 600; }
-  #tooltip {
-    position: fixed; pointer-events: none; display: none; z-index: 10;
-    background: var(--surface-1); color: var(--ink-1); border: 1px solid var(--border);
-    border-radius: 6px; padding: 6px 10px; font-size: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.15);
-  }
+  #tooltip { position: fixed; pointer-events: none; display: none; z-index: 10; background: var(--surface-1); color: var(--ink-1); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.15); }
+  .hbar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+  .hbar-label { width: 250px; min-width: 120px; color: var(--ink-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hbar-track { flex: 1; background: var(--grid); border-radius: 4px; height: 14px; }
+  .hbar-fill { height: 14px; border-radius: 4px; background: var(--s1); }
+  .hbar-val { width: 52px; text-align: right; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
 <header>
   <h1>MamaPook — Marketing Dashboard</h1>
-  <span class="synth-badge" id="dataBadge">SYNTHETIC DATA — awaiting POS feed</span>
+  <span class="synth-badge">SYNTHETIC DATA — awaiting POS feed</span>
 </header>
 <nav id="nav"></nav>
 <main id="main"></main>
@@ -102,23 +81,114 @@ const D = window.MP_DATA, DIMS = window.MP_DIMS;
 const SLOT = ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)', 'var(--s5)', 'var(--s6)', 'var(--s7)', 'var(--s8)'];
 const branchColor = Object.fromEntries(DIMS.BRANCHES.map((b, i) => [b, SLOT[i]]));   // fixed order, never cycled
 const channelColor = Object.fromEntries(DIMS.CHANNELS.map((c, i) => [c, SLOT[i]]));
-const fmtM = n => (n / 1e6).toFixed(2) + 'M';
+const noodleColor = Object.fromEntries(DIMS.NOODLES.map((n, i) => [n, SLOT[i]]));
 const fmtN = n => n.toLocaleString('en-US');
 
-// Sequential blue ramp (light steps 100->700) for heat cells; text stays ink.
 const SEQ = ['#cde2fb','#b7d3f6','#9ec5f4','#86b6ef','#6da7ec','#5598e7','#3987e5','#2a78d6','#256abf','#1c5cab','#184f95','#104281','#0d366b'];
-function heatColor(v, max) {
-  const t = Math.max(0, Math.min(1, v / max));
-  return SEQ[Math.round(t * (SEQ.length - 1))];
-}
+function heatColor(v, max) { const t = Math.max(0, Math.min(1, v / max)); return SEQ[Math.round(t * (SEQ.length - 1))]; }
 function heatInk(v, max) { return (v / max) > 0.55 ? '#ffffff' : '#0b0b0b'; }
 
 const tooltip = document.getElementById('tooltip');
-function tipOn(e, html) {
-  tooltip.innerHTML = html; tooltip.style.display = 'block';
-  tooltip.style.left = (e.clientX + 12) + 'px'; tooltip.style.top = (e.clientY + 12) + 'px';
-}
+function tipOn(e, html) { tooltip.innerHTML = html; tooltip.style.display = 'block'; tooltip.style.left = (e.clientX + 12) + 'px'; tooltip.style.top = (e.clientY + 12) + 'px'; }
 function tipOff() { tooltip.style.display = 'none'; }
+
+// ---------- reusable components ----------
+// Heat table: rows x cols matrix. normalize: 'all' | 'row'
+function heatTable(rowLabels, colLabels, matrix, { fmt = v => v, normalize = 'all', rowHeader = '' } = {}) {
+  const maxAll = Math.max(...matrix.flat());
+  return `<table class="heat">
+    <tr><th>${rowHeader}</th>${colLabels.map(c => `<th class="num">${c}</th>`).join('')}</tr>
+    ${rowLabels.map((r, ri) => {
+      const max = normalize === 'row' ? Math.max(...matrix[ri]) : maxAll;
+      return `<tr><td>${r}</td>${matrix[ri].map((v, ci) =>
+        `<td class="cell" style="background:${heatColor(v, max)};color:${heatInk(v, max)}"
+             title="${r} × ${colLabels[ci]}: ${fmt(v)}">${fmt(v)}</td>`).join('')}</tr>`;
+    }).join('')}</table>`;
+}
+
+// Multi-series line chart over months
+function lineChart(host, rows, metric, yFmt, aria) {
+  const W = 720, H = 220, P = { l: 48, r: 74, t: 10, b: 24 };
+  const maxY = Math.max(...rows.map(r => r[metric])) * 1.15;
+  const x = i => P.l + i * (W - P.l - P.r) / (DIMS.MONTHS.length - 1);
+  const y = v => H - P.b - v / maxY * (H - P.t - P.b);
+  let g = '';
+  for (let t = 0; t <= 4; t++) {
+    const v = maxY * t / 4, yy = y(v);
+    g += `<line x1="${P.l}" x2="${W - P.r}" y1="${yy}" y2="${yy}" stroke="var(--grid)"/>
+          <text x="${P.l - 6}" y="${yy + 3}" text-anchor="end">${yFmt(v)}</text>`;
+  }
+  g += DIMS.MONTHS.map((m, i) => `<text x="${x(i)}" y="${H - 6}" text-anchor="middle">${m}</text>`).join('');
+  const endLabels = [];
+  DIMS.BRANCHES.forEach(b => {
+    const pts = rows.filter(r => r.branch === b);
+    if (!pts.length) return;
+    const path = pts.map((r, j) => (j ? 'L' : 'M') + x(DIMS.MONTHS.indexOf(r.month)) + ' ' + y(r[metric])).join(' ');
+    g += `<path d="${path}" fill="none" stroke="${branchColor[b]}" stroke-width="2" stroke-linecap="round"/>`;
+    pts.forEach(r => {
+      g += `<circle cx="${x(DIMS.MONTHS.indexOf(r.month))}" cy="${y(r[metric])}" r="8" fill="transparent"
+             onmousemove="tipOn(event, '<b>${b}</b> · ${r.month}<br>${yFmt(r[metric])}')" onmouseleave="tipOff()"/>
+            <circle cx="${x(DIMS.MONTHS.indexOf(r.month))}" cy="${y(r[metric])}" r="2.5" fill="${branchColor[b]}" pointer-events="none"/>`;
+    });
+    const last = pts[pts.length - 1];
+    endLabels.push({ b, x: x(DIMS.MONTHS.indexOf(last.month)) + 8, y: y(last[metric]) + 3 });
+  });
+  endLabels.sort((a, b2) => a.y - b2.y);
+  for (let i = 1; i < endLabels.length; i++)
+    if (endLabels[i].y - endLabels[i - 1].y < 14) endLabels[i].y = endLabels[i - 1].y + 14;
+  g += endLabels.map(l => `<text class="dl" x="${l.x}" y="${l.y}">${l.b}</text>`).join('');
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${aria}">${g}</svg>`;
+}
+
+// 100% stacked horizontal bars: one row per group
+function stack100(host, data, seriesNames, colorOf, aria) {
+  host.innerHTML = data.map(row => {
+    const total = row.values.reduce((a, x) => a + x, 0) || 1;
+    let acc = 0;
+    const segs = row.values.map((v, i) => {
+      const w = 100 * v / total, left = acc; acc += w;
+      const label = w > 9 ? `<span style="position:absolute;left:${left + w / 2}%;transform:translateX(-50%);color:#fff;font-size:11px;line-height:18px">${v.toFixed(0)}%</span>` : '';
+      return `<div style="position:absolute;left:${left}%;width:${Math.max(w - 0.4, 0)}%;height:18px;border-radius:3px;background:${colorOf(seriesNames[i])}"
+        onmousemove="tipOn(event,'<b>${row.group}</b> · ${seriesNames[i]}<br>${v.toFixed(1)}%')" onmouseleave="tipOff()"></div>${label}`;
+    }).join('');
+    return `<div style="display:flex;align-items:center;gap:10px;margin:7px 0">
+      <div class="hbar-label" style="width:90px">${row.group}</div>
+      <div style="flex:1;position:relative;height:18px">${segs}</div></div>`;
+  }).join('') + `<div class="legend">${seriesNames.map(s => `<span style="--c:${colorOf(s)}">${s}</span>`).join('')}</div>`;
+}
+
+// Clustered 2-series bars (weekday vs weekend) per branch
+function clustered(host, title, get, yFmt) {
+  const W = 340, H = 190, P = { l: 46, r: 6, t: 14, b: 24 };
+  const maxY = Math.max(...D.wdwe.flatMap(r => [get(r).weekday, get(r).weekend])) * 1.15;
+  const y = v => H - P.b - v / maxY * (H - P.t - P.b);
+  const step = (W - P.l - P.r) / D.wdwe.length, bw = 26;
+  let g = `<text class="dl" x="${P.l}" y="10">${title}</text>`;
+  for (let t = 0; t <= 3; t++) {
+    const v = maxY * t / 3, yy = y(v);
+    g += `<line x1="${P.l}" x2="${W - P.r}" y1="${yy}" y2="${yy}" stroke="var(--grid)"/>
+          <text x="${P.l - 5}" y="${yy + 3}" text-anchor="end">${yFmt(v)}</text>`;
+  }
+  D.wdwe.forEach((r, i) => {
+    const cx = P.l + step * i + step / 2, v = get(r);
+    [['weekday', -bw - 1, 'var(--s1)'], ['weekend', 1, 'var(--s3)']].forEach(([dt, off, col]) => {
+      g += `<rect x="${cx + off}" y="${y(v[dt])}" width="${bw}" height="${H - P.b - y(v[dt])}" rx="3" fill="${col}"
+        onmousemove="tipOn(event,'<b>${r.branch}</b> · ${dt}<br>${yFmt(v[dt])}')" onmouseleave="tipOff()"/>`;
+    });
+    g += `<text x="${cx}" y="${H - 8}" text-anchor="middle">${r.branch}</text>`;
+  });
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${title} weekday vs weekend">${g}</svg>`;
+}
+
+function hbars(host, items, label, val, maxOverride, color) {
+  const max = maxOverride || Math.max(...items.map(val));
+  host.innerHTML = items.map(it => `
+    <div class="hbar-row" onmousemove="tipOn(event,'${label(it)}: ${val(it)}%')" onmouseleave="tipOff()">
+      <div class="hbar-label">${label(it)}</div>
+      <div class="hbar-track"><div class="hbar-fill" style="width:${100 * val(it) / max}%;${color ? 'background:' + color : ''}"></div></div>
+      <div class="hbar-val">${val(it)}%</div>
+    </div>`).join('');
+}
 
 // ---------- pages ----------
 const PAGES = [
@@ -126,18 +196,16 @@ const PAGES = [
   { id: 'dayparts', title: 'Dayparts', render: renderDayparts },
   { id: 'menu', title: 'Menu & Category', render: renderMenu },
   { id: 'basket', title: 'Basket & Add-on', render: renderBasket },
+  { id: 'wdwe', title: 'Weekday vs Weekend', render: renderWdWe },
   { id: 'soon', title: 'Marketing · Social · Reputation', render: renderSoon },
 ];
 const nav = document.getElementById('nav'), main = document.getElementById('main');
-PAGES.forEach((p, i) => {
+PAGES.forEach(p => {
   const b = document.createElement('button');
-  b.textContent = p.title;
-  b.onclick = () => activate(p.id);
-  b.dataset.page = p.id;
+  b.textContent = p.title; b.dataset.page = p.id; b.onclick = () => activate(p.id);
   nav.appendChild(b);
   const s = document.createElement('section');
-  s.className = 'page'; s.id = 'page-' + p.id;
-  main.appendChild(s);
+  s.className = 'page'; s.id = 'page-' + p.id; main.appendChild(s);
   p.render(s);
 });
 function activate(id) {
@@ -149,7 +217,7 @@ activate(PAGES.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(
 window.addEventListener('hashchange', () =>
   activate(PAGES.some(p => p.id === location.hash.slice(1)) ? location.hash.slice(1) : 'overview'));
 
-// ---------- Overview ----------
+// ---------- Overview (deck p.4-8, 53) ----------
 function renderOverview(el) {
   el.innerHTML = `
     <div class="tiles">
@@ -158,170 +226,115 @@ function renderOverview(el) {
       ${tile('Avg basket size', '฿' + D.kpi.abs + ' /bill')}
       ${tile('Branches live', '4')}
     </div>
-    <div class="card">
-      <h2>Monthly sales by branch</h2>
-      <div class="sub">marts.v_monthly_by_branch — agency deck p.4</div>
-      <div id="ovLine"></div>
-      <div class="legend">${DIMS.BRANCHES.map(b => `<span style="--c:${branchColor[b]}">${b}</span>`).join('')}</div>
+    <div class="card"><h2>Monthly sales by branch</h2><div class="sub">marts.v_monthly_by_branch — deck p.4 (left)</div><div id="ovSales"></div>
+      <div class="legend">${DIMS.BRANCHES.map(b => `<span style="--c:${branchColor[b]}">${b}</span>`).join('')}</div></div>
+    <div class="grid2">
+      <div class="card"><h2>Monthly transactions</h2><div class="sub">deck p.4 (middle)</div><div id="ovTxn"></div></div>
+      <div class="card"><h2>Monthly ABS (฿/bill)</h2><div class="sub">deck p.4 (right)</div><div id="ovAbs"></div></div>
     </div>
     <div class="card">
-      <h2>Sales contribution by channel, per branch</h2>
-      <div class="sub">marts.v_branch_channel — deck p.5–8</div>
-      <div id="ovStack"></div>
-      <div class="legend">${DIMS.CHANNELS.map(c => `<span style="--c:${channelColor[c]}">${c}</span>`).join('')}</div>
-    </div>`;
-  lineChart(el.querySelector('#ovLine'), D.monthly);
-  stackedBars(el.querySelector('#ovStack'), D.channelMix);
+      <h2>Branch × Channel matrix</h2><div class="sub">marts.v_branch_channel — deck p.5–8: sales, share of branch, ABS per channel</div>
+      <table>
+        <tr><th>Branch</th><th>Channel</th><th class="num">Sales (฿)</th><th class="num">% of branch</th><th class="num">ABS (฿/bill)</th><th class="num">Transactions</th></tr>
+        ${D.branchChannel.map(r => `<tr><td>${r.branch}</td><td>${r.channel}</td><td class="num">${fmtN(r.sales)}</td>
+          <td class="num">${r.pct.toFixed(1)}%</td><td class="num">${r.abs}</td><td class="num">${fmtN(r.transactions)}</td></tr>`).join('')}
+      </table>
+    </div>
+    <div class="card"><h2>Sales contribution by channel, per branch</h2><div class="sub">deck p.5/8 stacked view</div><div id="ovStack"></div></div>`;
+  lineChart(el.querySelector('#ovSales'), D.monthly, 'sales', v => (v / 1e6).toFixed(1) + 'M', 'Monthly sales by branch');
+  lineChart(el.querySelector('#ovTxn'), D.monthly, 'transactions', v => (v / 1000).toFixed(1) + 'k', 'Monthly transactions by branch');
+  lineChart(el.querySelector('#ovAbs'), D.monthly, 'abs', v => '฿' + Math.round(v), 'Monthly ABS by branch');
+  const mix = DIMS.BRANCHES.map(b => ({
+    group: b,
+    values: DIMS.CHANNELS.map(c => (D.branchChannel.find(r => r.branch === b && r.channel === c) || { pct: 0 }).pct),
+  }));
+  stack100(el.querySelector('#ovStack'), mix, DIMS.CHANNELS, s => channelColor[s], 'Channel mix per branch');
 }
 function tile(label, value, delta) {
   return `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div>${delta ? `<div class="delta">▲ ${delta}</div>` : ''}</div>`;
 }
 
-function lineChart(host, rows) {
-  const W = 720, H = 240, P = { l: 44, r: 70, t: 10, b: 24 };
-  const maxY = Math.max(...rows.map(r => r.sales)) * 1.15;
-  const x = i => P.l + i * (W - P.l - P.r) / (DIMS.MONTHS.length - 1);
-  const y = v => H - P.b - v / maxY * (H - P.t - P.b);
-  let g = '';
-  for (let t = 0; t <= 4; t++) {
-    const v = maxY * t / 4, yy = y(v);
-    g += `<line x1="${P.l}" x2="${W - P.r}" y1="${yy}" y2="${yy}" stroke="var(--grid)" stroke-width="1"/>
-          <text x="${P.l - 6}" y="${yy + 3}" text-anchor="end">${(v / 1e6).toFixed(1)}M</text>`;
-  }
-  g += DIMS.MONTHS.map((m, i) => `<text x="${x(i)}" y="${H - 6}" text-anchor="middle">${m}</text>`).join('');
-  const endLabels = [];
-  DIMS.BRANCHES.forEach(b => {
-    const pts = rows.filter(r => r.branch === b);
-    if (!pts.length) return;
-    const path = pts.map((r, j) => (j ? 'L' : 'M') + x(DIMS.MONTHS.indexOf(r.month)) + ' ' + y(r.sales)).join(' ');
-    g += `<path d="${path}" fill="none" stroke="${branchColor[b]}" stroke-width="2" stroke-linecap="round"/>`;
-    pts.forEach(r => {
-      g += `<circle cx="${x(DIMS.MONTHS.indexOf(r.month))}" cy="${y(r.sales)}" r="8" fill="transparent"
-             onmousemove="tipOn(event, '<b>${b}</b> · ${r.month}<br>฿${fmtN(r.sales)} · ${fmtN(r.transactions)} bills · ABS ฿${r.abs}')"
-             onmouseleave="tipOff()"/>
-            <circle cx="${x(DIMS.MONTHS.indexOf(r.month))}" cy="${y(r.sales)}" r="2.5" fill="${branchColor[b]}" pointer-events="none"/>`;
-    });
-    const last = pts[pts.length - 1];
-    endLabels.push({ b, x: x(DIMS.MONTHS.indexOf(last.month)) + 8, y: y(last.sales) + 3 });
-  });
-  // de-overlap end labels: enforce 14px vertical separation
-  endLabels.sort((a, b2) => a.y - b2.y);
-  for (let i = 1; i < endLabels.length; i++)
-    if (endLabels[i].y - endLabels[i - 1].y < 14) endLabels[i].y = endLabels[i - 1].y + 14;
-  g += endLabels.map(l => `<text class="dl" x="${l.x}" y="${l.y}">${l.b}</text>`).join('');
-  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Monthly sales by branch">${g}</svg>`;
-}
-
-function stackedBars(host, mix) {
-  const W = 720, H = 210, P = { l: 40, r: 10, t: 8, b: 24 }, bw = 90;
-  const step = (W - P.l - P.r) / mix.length;
-  let g = '';
-  for (let t = 0; t <= 4; t++) {
-    const yy = P.t + (H - P.t - P.b) * t / 4;
-    g += `<text x="${P.l - 6}" y="${yy + 3}" text-anchor="end">${100 - t * 25}%</text>`;
-  }
-  mix.forEach((row, i) => {
-    const cx = P.l + step * i + step / 2;
-    let acc = 0;
-    row.values.forEach((v, ci) => {
-      const total = row.values.reduce((a, x) => a + x, 0) || 1;
-      const hpx = (H - P.t - P.b) * v / total;
-      const y0 = H - P.b - (acc + hpx);
-      g += `<rect x="${cx - bw / 2}" y="${y0}" width="${bw}" height="${Math.max(hpx - 2, 0)}" rx="2"
-              fill="${channelColor[DIMS.CHANNELS[ci]]}"
-              onmousemove="tipOn(event, '<b>${row.branch}</b> · ${DIMS.CHANNELS[ci]}<br>${v.toFixed(1)}% of sales')"
-              onmouseleave="tipOff()"/>`;
-      if (v > 8) g += `<text x="${cx}" y="${y0 + hpx / 2 + 4}" text-anchor="middle" fill="#fff" pointer-events="none">${v.toFixed(0)}%</text>`;
-      acc += hpx;
-    });
-    g += `<text x="${cx}" y="${H - 6}" text-anchor="middle">${row.branch}</text>`;
-  });
-  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Channel mix per branch">${g}</svg>`;
-}
-
-// ---------- Dayparts ----------
+// ---------- Dayparts (deck p.9-10, 29-30) ----------
 function renderDayparts(el) {
   el.innerHTML = `
     <div class="card">
-      <h2>Sales contribution by hour</h2>
-      <div class="sub">marts.v_daypart — deck p.9, 29–30. Each row sums to 100% across hours.</div>
-      <div class="controls" id="dtCtl">
-        <button data-dt="weekday" class="active">Weekday</button>
-        <button data-dt="weekend">Weekend</button>
-      </div>
+      <h2>Sales contribution by hour — per branch</h2>
+      <div class="sub">marts.v_daypart — deck p.30. Each row sums to 100% across hours.</div>
+      <div class="controls" id="dtCtl"><button data-dt="weekday" class="active">Weekday</button><button data-dt="weekend">Weekend</button></div>
       <div id="dpHeat"></div>
+    </div>
+    <div class="card">
+      <h2>Sales contribution by hour — per channel</h2>
+      <div class="sub">deck p.29. Weekday vs weekend columns per channel.</div>
+      <div id="chHeat"></div>
+    </div>
+    <div class="card">
+      <h2>ABS by hour (฿/bill) — per branch</h2>
+      <div class="sub">deck p.10. High-spend windows: office lunch (OCC/Silom 12:00), evening take-away (Silom/Gaysorn 19:00+).</div>
+      <div id="absHeat"></div>
     </div>`;
   const heat = el.querySelector('#dpHeat');
-  const draw = dt => {
-    const data = D.daypart[dt];
-    const max = Math.max(...DIMS.BRANCHES.flatMap(b => data[b]));
-    heat.innerHTML = `<table class="heat">
-      <tr><th>Branch</th>${DIMS.HOURS.map(h => `<th class="num">${h}:00</th>`).join('')}</tr>
-      ${DIMS.BRANCHES.map(b => `<tr><td>${b}</td>${data[b].map((v, i) =>
-        `<td class="cell" style="background:${heatColor(v, max)};color:${heatInk(v, max)}"
-             title="${b} ${DIMS.HOURS[i]}:00 — ${v}% of ${dt} sales">${v}</td>`).join('')}</tr>`).join('')}
-    </table>`;
+  const drawDp = dt => {
+    heat.innerHTML = heatTable(DIMS.BRANCHES, DIMS.HOURS.map(h => h + ':00'),
+      DIMS.BRANCHES.map(b => D.daypart[dt][b]), { fmt: v => v, rowHeader: 'Branch' });
   };
   el.querySelectorAll('#dtCtl button').forEach(b => b.onclick = () => {
     el.querySelectorAll('#dtCtl button').forEach(x => x.classList.toggle('active', x === b));
-    draw(b.dataset.dt);
+    drawDp(b.dataset.dt);
   });
-  draw('weekday');
+  drawDp('weekday');
+  const chRows = [], chLabels = [];
+  DIMS.CHANNELS.forEach(c => ['weekday', 'weekend'].forEach(dt => { chLabels.push(c + ' · ' + dt); chRows.push(D.channelHour[dt][c]); }));
+  el.querySelector('#chHeat').innerHTML = heatTable(chLabels, DIMS.HOURS.map(h => h + ':00'), chRows, { rowHeader: 'Channel × day type' });
+  el.querySelector('#absHeat').innerHTML = heatTable(DIMS.BRANCHES, DIMS.HOURS.map(h => h + ':00'),
+    DIMS.BRANCHES.map(b => D.daypartAbs[b]), { fmt: v => '฿' + v, normalize: 'row', rowHeader: 'Branch' });
 }
 
-// ---------- Menu & Category ----------
+// ---------- Menu & Category (deck p.13-17) ----------
 function renderMenu(el) {
-  const max = Math.max(...D.categoryMix.flatMap(r => r.values));
   el.innerHTML = `
-    <div class="card">
-      <h2>Category share by channel</h2>
-      <div class="sub">marts.v_category_mix — deck p.13. Columns sum to ~100%.</div>
-      <table class="heat">
-        <tr><th>Category</th>${D.categoryMix.map(r => `<th class="num">${r.channel}</th>`).join('')}</tr>
-        ${DIMS.CATEGORIES.map((cat, ci) => `<tr><td>${cat}</td>${D.categoryMix.map(r =>
-          `<td class="cell" style="background:${heatColor(r.values[ci], max)};color:${heatInk(r.values[ci], max)}"
-               title="${cat} — ${r.values[ci]}% of ${r.channel} sales">${r.values[ci]}%</td>`).join('')}</tr>`).join('')}
-      </table>
+    <div class="grid2">
+      <div class="card"><h2>Category share by channel</h2><div class="sub">marts.v_category_mix — deck p.13. Columns ≈ 100%.</div><div id="catChan"></div></div>
+      <div class="card"><h2>Category share by branch</h2><div class="sub">deck p.16</div><div id="catBranch"></div></div>
     </div>
-    <div class="card">
-      <h2>Top menu items — share of total sales</h2>
-      <div class="sub">marts.v_menu_ranking — deck p.14</div>
-      <div id="topItems"></div>
+    <div class="card"><h2>Top menu items — share of total sales</h2><div class="sub">marts.v_menu_ranking — deck p.14</div><div id="topItems"></div></div>
+    <div class="grid2">
+      <div class="card"><h2>Noodle-type preference by channel</h2><div class="sub">marts.v_noodle_mix — deck p.15</div><div id="noodleChan"></div></div>
+      <div class="card"><h2>Noodle-type preference by branch</h2><div class="sub">deck p.17</div><div id="noodleBranch"></div></div>
     </div>
-    <div class="card">
-      <h2>Menu engineering</h2>
-      <div class="sub">marts.v_menu_engineering — awaiting menu cost file (stars / plowhorses / puzzles / dogs)</div>
-    </div>`;
-  const host = el.querySelector('#topItems');
-  const maxS = D.topItems[0].share;
-  host.innerHTML = D.topItems.map(it => `
-    <div style="display:flex;align-items:center;gap:10px;margin:6px 0"
-         onmousemove="tipOn(event,'<b>${it.sku}</b> ${it.name}<br>${it.share}% of total sales')" onmouseleave="tipOff()">
-      <div style="width:44px;color:var(--ink-2);font-size:12px">${it.sku}</div>
-      <div style="flex:1;background:var(--grid);border-radius:4px;height:14px;position:relative">
-        <div style="width:${100 * it.share / maxS}%;height:14px;border-radius:4px;background:var(--s1)"></div>
-      </div>
-      <div style="width:52px;text-align:right;font-variant-numeric:tabular-nums">${it.share}%</div>
-    </div>`).join('');
+    <div class="card"><h2>Menu engineering</h2><div class="sub">marts.v_menu_engineering — activates when the menu cost file is loaded (stars / plowhorses / puzzles / dogs)</div></div>`;
+  el.querySelector('#catChan').innerHTML = heatTable(DIMS.CATEGORIES, DIMS.CHANNELS.map(c => c),
+    DIMS.CATEGORIES.map((_, ci) => D.categoryMix.map(r => r.values[ci])), { fmt: v => v + '%', rowHeader: 'Category' });
+  el.querySelector('#catBranch').innerHTML = heatTable(DIMS.CATEGORIES, DIMS.BRANCHES,
+    DIMS.CATEGORIES.map((_, ci) => D.categoryMixBranch.map(r => r.values[ci])), { fmt: v => v + '%', rowHeader: 'Category' });
+  hbars(el.querySelector('#topItems'), D.topItems, it => `${it.sku} — ${it.name}`, it => it.share);
+  stack100(el.querySelector('#noodleChan'), D.noodleByChannel, DIMS.NOODLES, s => noodleColor[s], 'Noodle mix by channel');
+  stack100(el.querySelector('#noodleBranch'), D.noodleByBranch, DIMS.NOODLES, s => noodleColor[s], 'Noodle mix by branch');
 }
 
-// ---------- Basket & Add-on ----------
+// ---------- Basket & Add-on (deck p.19-26) ----------
 function renderBasket(el) {
   el.innerHTML = `
-    <div class="card">
-      <h2>Bills by number of main dishes</h2>
-      <div class="sub">marts.v_basket_distribution — deck p.19. Main dish = Signature, Noodles, Rice, Gaolao.</div>
-      <div id="bkBars"></div>
-    </div>
-    <div class="card">
-      <h2>Add-on attachment by channel</h2>
-      <div class="sub">marts.v_addon_attachment — deck p.20–23. Units/bill divides by bills WITH add-on (deck p.21).</div>
+    <div class="card"><h2>Bills by number of main dishes</h2>
+      <div class="sub">marts.v_basket_distribution — deck p.19. Main dish = Signature, Noodles, Rice, Gaolao.</div><div id="bkBars"></div></div>
+    <div class="card"><h2>Top combination patterns per basket size</h2><div class="sub">marts.v_combo_patterns — deck p.19 (right)</div>
+      <div class="grid2" style="grid-template-columns:1fr 1fr 1fr" id="combos"></div></div>
+    <div class="card"><h2>Add-on attachment by channel</h2>
+      <div class="sub">marts.v_addon_attachment — deck p.20–23. Units/bill divides by bills WITH add-on (deck p.21). Sets excluded.</div>
       <table>
         <tr><th>Channel</th><th class="num">% bills with add-on</th><th class="num">Add-on units / bill</th><th>Top add-on subcategory</th></tr>
-        ${D.attachment.map(a => `<tr><td>${a.channel}</td><td class="num">${a.pctWithAddon}%</td>
-          <td class="num">${a.addonPerBill}</td><td>${a.topSub}</td></tr>`).join('')}
-      </table>
-    </div>`;
+        ${D.attachment.map(a => `<tr><td>${a.channel}</td><td class="num">${a.pctWithAddon}%</td><td class="num">${a.addonPerBill}</td><td>${a.topSub}</td></tr>`).join('')}
+      </table></div>
+    <div class="grid2">
+      <div class="card"><h2>Add-on units/bill by subcategory × channel</h2><div class="sub">marts.v_addon_by_subcategory — deck p.20/22/23</div><div id="subChan"></div></div>
+      <div class="card"><h2>Add-on units/bill by subcategory × branch</h2><div class="sub">deck p.26 benchmark (heat within each row)</div><div id="subBranch"></div></div>
+    </div>
+    <div class="card"><h2>ABS by basket size</h2><div class="sub">marts.v_abs_by_basket — deck p.24</div>
+      <table>
+        <tr><th>Main dishes</th><th class="num">Bills</th><th class="num">ABS (฿)</th><th class="num">ABS / main dish (฿)</th><th class="num">% of sales</th></tr>
+        ${D.absByBasket.map(r => `<tr><td>${r.bucket}</td><td class="num">${fmtN(r.bills)}</td><td class="num">${r.abs}</td><td class="num">${r.absPerMain}</td><td class="num">${r.pctSales}%</td></tr>`).join('')}
+      </table></div>`;
+  // distribution bars
   const host = el.querySelector('#bkBars');
   const W = 720, H = 200, P = { l: 40, r: 10, t: 10, b: 26 };
   const max = Math.max(...D.basket.map(b => b.pctBills)) * 1.1;
@@ -337,15 +350,43 @@ function renderBasket(el) {
   });
   host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Bills by main dish count">${g}</svg>
     <div class="sub" style="margin-top:4px">x: main dishes per bill · y: % of all bills</div>`;
+  // combos
+  el.querySelector('#combos').innerHTML = ['1', '2', '3'].map(k => `
+    <div><div class="sub" style="margin-bottom:6px"><b>${k} main dish${k > 1 ? 'es' : ''}</b> — % of that group</div><div id="combo${k}"></div></div>`).join('');
+  ['1', '2', '3'].forEach(k => hbars(el.querySelector('#combo' + k), D.combos[k], it => it.p, it => it.pct, 45));
+  // sub-category heats
+  el.querySelector('#subChan').innerHTML = heatTable(DIMS.ADDON_SUBS, DIMS.CHANNELS,
+    DIMS.ADDON_SUBS.map((_, si) => D.addonSub.map(r => r.values[si])), { fmt: v => v.toFixed(2), rowHeader: 'Subcategory' });
+  el.querySelector('#subBranch').innerHTML = heatTable(DIMS.ADDON_SUBS, DIMS.BRANCHES,
+    DIMS.ADDON_SUBS.map((_, si) => D.addonSubBranch.map(r => r.values[si])), { fmt: v => v.toFixed(2), normalize: 'row', rowHeader: 'Subcategory' });
+}
+
+// ---------- Weekday vs Weekend (deck p.28) ----------
+function renderWdWe(el) {
+  el.innerHTML = `
+    <div class="card">
+      <h2>Weekday vs Weekend by branch</h2>
+      <div class="sub">marts.v_weekday_weekend — deck p.28. Sales = Orders × ABS decomposition.</div>
+      <div class="grid2" style="grid-template-columns:1fr 1fr 1fr" >
+        <div id="wwSales"></div><div id="wwOrders"></div><div id="wwAbs"></div>
+      </div>
+      <div class="legend"><span style="--c:var(--s1)">Weekday</span><span style="--c:var(--s3)">Weekend</span></div>
+    </div>
+    <div class="card"><h2>Reading it</h2>
+      <div class="sub">OCC and Silom depend on weekday office traffic; Rama9 is the only weekend-first branch — its promos belong on Sat–Sun. OCC has the highest ABS in both periods (spending potential) but the least traffic.</div>
+    </div>`;
+  clustered(el.querySelector('#wwSales'), 'Sales / day (฿)', r => r.salesPerDay, v => (v / 1000).toFixed(0) + 'k');
+  clustered(el.querySelector('#wwOrders'), 'Orders / day', r => r.ordersPerDay, v => Math.round(v));
+  clustered(el.querySelector('#wwAbs'), 'ABS (฿/bill)', r => r.abs, v => Math.round(v));
 }
 
 // ---------- Placeholder ----------
 function renderSoon(el) {
   el.innerHTML = `
-    <div class="card"><h2>Marketing ROI & Campaigns</h2><div class="sub">Wired to marts.v_marketing_monthly, v_cpo, v_campaign_uplift — activates with the accounting feed (phase 5).</div></div>
-    <div class="card"><h2>Social & Content</h2><div class="sub">Wired to marts.v_post_performance, v_content_sales_impact — activates with social API tokens (phase 6).</div></div>
-    <div class="card"><h2>Reputation</h2><div class="sub">Wired to marts.v_ratings_trend, v_review_themes — activates with Google/Grab review ingest (phase 6).</div></div>
-    <div class="card"><h2>Data health</h2><div class="sub">Wired to ops.ingestion_log + marts.v_unmapped_items (phase 3).</div></div>`;
+    <div class="card"><h2>Marketing ROI & Campaigns</h2><div class="sub">Wired to marts.v_marketing_monthly, v_cpo, v_campaign_uplift — activates with the accounting feed (phase 5). Will show: budget vs actual by cost type, ROI = sales ÷ spend (deck p.53/56), CPO per campaign/audience (p.59), campaign uplift vs baseline.</div></div>
+    <div class="card"><h2>Social & Content</h2><div class="sub">Wired to marts.v_post_performance, v_social_growth, v_content_sales_impact — activates with social API tokens (phase 6). Will show: follower growth own vs competitors, engagement per post/pillar, post → menu-item sales lift.</div></div>
+    <div class="card"><h2>Reputation</h2><div class="sub">Wired to marts.v_ratings_trend, v_review_themes — activates with Google/Grab review ingest (phase 6). Will show: rating trend per branch × platform (deck p.42/50), complaint themes (p.48–51).</div></div>
+    <div class="card"><h2>Data health</h2><div class="sub">Wired to ops.ingestion_log + marts.v_unmapped_items (phase 3): feed freshness, load history, unmapped POS item names.</div></div>`;
 }
 </script>
 </body>
