@@ -19,7 +19,7 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 | Supabase project | **Marketing** — ref `qtpwrwapbefczvqdfzes`, region ap-southeast-1. (Do NOT touch `mamapook-planner` — that's the separate production-planning project.) |
 | Migrations applied | 0001–0005 applied and verified (36 tables, seeded dims incl. 2,557-day calendar). |
 | Migration 0006 (RLS lockdown) | **Applied 2026-07-14.** RLS enabled on all 36 tables, no policies: public keys fully blocked; service role and SQL unaffected. |
-| Dashboard | **v1 LIVE (synthetic data)** at https://marketing.itthichet-a.workers.dev — deployed via Cloudflare Workers static assets, Git-connected to this repo, assets dir `dashboard/`. Owner to add Cloudflare Access in front (Zero Trust). Real-data wiring = phase 4. |
+| Dashboard | **v1 LIVE (synthetic data)** at https://marketing.itthichet-a.workers.dev — Cloudflare Worker static assets, Git-connected, assets dir `dashboard/`. Owner decision: NO Access wall while data is synthetic; **Cloudflare Access becomes a hard prerequisite of phase 4** (before real POS data shows on the dashboard). Preview URLs disabled; production workers.dev toggle must stay ON. |
 | Ingestion | No feeds connected yet. `core.load_pos(from, to)` transform function is ready and tested. |
 | Alerts | Rules seeded; check functions deployed; **pg_cron live** (hourly checks :30, digest 02:00 UTC = 09:00 BKK) queueing into `ops.alert_queue`. LINE Edge Function not built (needs LINE OA credentials). |
 | GitHub ↔ Supabase | Not connected; not required. Migrations are applied via the Supabase integration from Claude sessions. |
