@@ -18,7 +18,7 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 |---|---|
 | Supabase project | **Marketing** — ref `qtpwrwapbefczvqdfzes`, region ap-southeast-1. (Do NOT touch `mamapook-planner` — that's the separate production-planning project.) |
 | Migrations applied | 0001–0005 applied and verified (36 tables, seeded dims incl. 2,557-day calendar). |
-| Migration 0006 (RLS lockdown) | **In repo, NOT applied — awaiting owner approval.** Enables RLS on all tables with no policies (public keys blocked; service role unaffected). |
+| Migration 0006 (RLS lockdown) | **Applied 2026-07-14.** RLS enabled on all 36 tables, no policies: public keys fully blocked; service role and SQL unaffected. |
 | Dashboard | Not started (phase 4). Page map in `docs/03-system-design.md`. |
 | Ingestion | No feeds connected yet. `core.load_pos(from, to)` transform function is ready and tested. |
 | Alerts | Rules seeded in `ops.alert_rules`; check functions deployed. pg_cron NOT scheduled yet; LINE Edge Function not built (needs LINE OA credentials). |
@@ -43,7 +43,6 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 
 ## Blocked on owner input
 
-- [ ] Approval to apply migration 0006 (RLS lockdown)
 - [ ] POS vendor + daily export format (file/API? item-level? customer identifier? delivery-platform field?)
 - [ ] Detailed menu + cost file → populate `core.dim_menu_item` (unlocks menu engineering)
 - [ ] LINE OA channel ID + access token (alerts, then OA webhook)
@@ -66,3 +65,6 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
   migrations 0001–0005; applied them to Supabase project `qtpwrwapbefczvqdfzes`; added 0006 RLS
   lockdown (unapplied, pending approval); added docs/04 gap analysis; created this handoff.
   Branch: `claude/marketing-model-supabase-aikp7e`.
+- **2026-07-14 (later)** — Owner approved: applied migration 0006 (RLS enabled on all tables,
+  verified by advisor). Decision: no Supabase Auth for now; dashboard will be protected with
+  Cloudflare Access at phase 4.
