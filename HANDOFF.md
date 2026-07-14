@@ -19,9 +19,9 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 | Supabase project | **Marketing** — ref `qtpwrwapbefczvqdfzes`, region ap-southeast-1. (Do NOT touch `mamapook-planner` — that's the separate production-planning project.) |
 | Migrations applied | 0001–0005 applied and verified (36 tables, seeded dims incl. 2,557-day calendar). |
 | Migration 0006 (RLS lockdown) | **Applied 2026-07-14.** RLS enabled on all 36 tables, no policies: public keys fully blocked; service role and SQL unaffected. |
-| Dashboard | Not started (phase 4). Page map in `docs/03-system-design.md`. |
+| Dashboard | **v1 skeleton built** in `dashboard/` (synthetic data, self-contained HTML/SVG, light+dark). Owner to connect Cloudflare Pages to the repo (`dashboard/README.md`) + add Cloudflare Access. Real-data wiring = phase 4. |
 | Ingestion | No feeds connected yet. `core.load_pos(from, to)` transform function is ready and tested. |
-| Alerts | Rules seeded in `ops.alert_rules`; check functions deployed. pg_cron NOT scheduled yet; LINE Edge Function not built (needs LINE OA credentials). |
+| Alerts | Rules seeded; check functions deployed; **pg_cron live** (hourly checks :30, digest 02:00 UTC = 09:00 BKK) queueing into `ops.alert_queue`. LINE Edge Function not built (needs LINE OA credentials). |
 | GitHub ↔ Supabase | Not connected; not required. Migrations are applied via the Supabase integration from Claude sessions. |
 
 ## Where things are
@@ -30,7 +30,8 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 - `docs/02-metrics-catalog.md` — all 35 metrics with formulas (note the add-on denominators from deck p.21)
 - `docs/03-system-design.md` — architecture, ingestion plan, alert rules, dashboard page map, roadmap
 - `docs/04-gap-analysis.md` — inventory by category + tiered gaps for further analysis
-- `supabase/migrations/` — 0001 raw+ops, 0002 dims+seeds, 0003 facts+plans, 0004 metric views, 0005 alerts, 0006 RLS (pending)
+- `supabase/migrations/` — 0001 raw+ops, 0002 dims+seeds, 0003 facts+plans, 0004 metric views, 0005 alerts, 0006 RLS (applied)
+- `dashboard/` — Pages site (index.html, data.js synthetic adapter, README with deploy steps)
 
 ## Key design rules (do not violate)
 
@@ -68,3 +69,8 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 - **2026-07-14 (later)** — Owner approved: applied migration 0006 (RLS enabled on all tables,
   verified by advisor). Decision: no Supabase Auth for now; dashboard will be protected with
   Cloudflare Access at phase 4.
+- **2026-07-14 (later)** — Seeded Thai holidays 2024-2030 into core.dim_date (lunar dates verified
+  for 2026-27; 2028-30 fixed-date only — refresh lunar dates yearly). Enabled pg_cron and scheduled
+  marketing-checks (hourly :30) + marketing-digest (02:00 UTC). Built dashboard v1 skeleton in
+  dashboard/ with synthetic data adapter mirroring marts view shapes; render-verified via headless
+  Chromium. Owner to connect Cloudflare Pages (see dashboard/README.md).
