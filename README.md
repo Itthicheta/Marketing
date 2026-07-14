@@ -31,6 +31,8 @@ performance report so the agency's analysis regenerates automatically from daily
 
 ## Status
 
-Phase 1 (schema + metric definitions + docs) — this repo. Not yet applied to a Supabase
-project. See `docs/03-system-design.md` → Roadmap and Open items for what's needed next
-(POS export format, menu & cost master, Supabase project choice, API credentials).
+Phases 1–2a done: schema + metric definitions + docs in this repo, and migrations 0001–0005
+applied to the Supabase project **Marketing** (`qtpwrwapbefczvqdfzes`, ap-southeast-1).
+Migration 0006 (RLS lockdown) is in the repo pending owner approval. See
+`docs/03-system-design.md` → Roadmap and Open items for what's needed next
+(POS export format, menu & cost master, API credentials).
