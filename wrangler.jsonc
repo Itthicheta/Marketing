@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "marketng",
+  "compatibility_date": "2026-07-14",
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "directory": "dashboard"
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ]
+}
