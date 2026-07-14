@@ -19,7 +19,7 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 | Supabase project | **Marketing** — ref `qtpwrwapbefczvqdfzes`, region ap-southeast-1. (Do NOT touch `mamapook-planner` — that's the separate production-planning project.) |
 | Migrations applied | 0001–0005 applied and verified (36 tables, seeded dims incl. 2,557-day calendar). |
 | Migration 0006 (RLS lockdown) | **Applied 2026-07-14.** RLS enabled on all 36 tables, no policies: public keys fully blocked; service role and SQL unaffected. |
-| Dashboard | **v1 skeleton built** in `dashboard/` (synthetic data, self-contained HTML/SVG, light+dark). Owner to connect Cloudflare Pages to the repo (`dashboard/README.md`) + add Cloudflare Access. Real-data wiring = phase 4. |
+| Dashboard | **v1 LIVE (synthetic data)** at https://marketing.itthichet-a.workers.dev — deployed via Cloudflare Workers static assets, Git-connected to this repo, assets dir `dashboard/`. Owner to add Cloudflare Access in front (Zero Trust). Real-data wiring = phase 4. |
 | Ingestion | No feeds connected yet. `core.load_pos(from, to)` transform function is ready and tested. |
 | Alerts | Rules seeded; check functions deployed; **pg_cron live** (hourly checks :30, digest 02:00 UTC = 09:00 BKK) queueing into `ops.alert_queue`. LINE Edge Function not built (needs LINE OA credentials). |
 | GitHub ↔ Supabase | Not connected; not required. Migrations are applied via the Supabase integration from Claude sessions. |
@@ -74,3 +74,6 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
   marketing-checks (hourly :30) + marketing-digest (02:00 UTC). Built dashboard v1 skeleton in
   dashboard/ with synthetic data adapter mirroring marts view shapes; render-verified via headless
   Chromium. Owner to connect Cloudflare Pages (see dashboard/README.md).
+- **2026-07-14 (later)** — Owner connected Cloudflare to the repo; dashboard deployed as a Worker
+  with static assets (not classic Pages) at https://marketing.itthichet-a.workers.dev. Pending:
+  Cloudflare Access in front of the URL.
