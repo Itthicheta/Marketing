@@ -16,7 +16,7 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 
 | Area | State |
 |---|---|
-| Supabase project | **Marketing** — ref `qtpwrwapbefczvqdfzes`, region ap-southeast-1. (Do NOT touch `mamapook-planner` — that's the separate production-planning project.) |
+| Supabase project | **Marketing** — ref `qtpwrwapbefczvqdfzes`, region ap-southeast-1. (Do NOT touch `mamapook-planner` — separate production-planning project.) The database also hosts the **`operation_log` schema** — a separate owner project with its own repo/sessions; Marketing work must NEVER touch `operation_log.*`, and vice versa (see operation-log-starter/). |
 | Migrations applied | 0001–0005 applied and verified (36 tables, seeded dims incl. 2,557-day calendar). |
 | Migration 0006 (RLS lockdown) | **Applied 2026-07-14.** RLS enabled on all 36 tables, no policies: public keys fully blocked; service role and SQL unaffected. |
 | Dashboard | **v1 LIVE (synthetic data)** at https://marketing.itthichet-a.workers.dev — Cloudflare Worker static assets, Git-connected, assets dir `dashboard/`. Owner decision: NO Access wall while data is synthetic; **Cloudflare Access becomes a hard prerequisite of phase 4** (before real POS data shows on the dashboard). Preview URLs disabled; production workers.dev toggle must stay ON. |
@@ -46,6 +46,7 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 4. Main dish = Signature, Noodles, Rice, Gaolao. OCC has no delivery channel.
 5. LINE alerts use the **Messaging API** (LINE Notify is discontinued).
 6. New POS item names must be mapped in `core.map_item_name`; unmapped ones show in `marts.v_unmapped_items`.
+7. The `operation_log` schema belongs to the separate Operation Log project — Marketing migrations and sessions never touch it. Shared project-level resources (cron prefixes marketing-/oplog-, edge functions, exposed schemas) follow the naming conventions in operation-log-starter/CLAUDE.md.
 
 ## Blocked on owner input
 
@@ -97,3 +98,8 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
   breakeven_adoption_pct, projected_gp_at_10pct_adoption; v_set_pnl realized family-GP verdict;
   set_verdict rule; cron consolidated into ops.run_insights(). docs/05 rewritten as the 7-step
   owner-approved logic; docs/06 created as the approved 31-rule catalog with delivery states.
+- **2026-07-14 (later)** — Owner requested a second, separated project inside the same Supabase
+  project (free-plan slot limit). Created schema `operation_log` (comment documents the boundary).
+  Added operation-log-starter/ (CLAUDE.md guardrails + SETUP.md) for the owner to copy into a new
+  operation-log repo; new Claude sessions on that repo are scoped by its CLAUDE.md. Design rule 7
+  added: Marketing never touches operation_log.* and vice versa.
