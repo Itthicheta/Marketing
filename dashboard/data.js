@@ -210,9 +210,33 @@ function synthWdWe() {
   });
 }
 
+// marts.v_insights — the suggestion layer (ops.generate_insights() output)
+function synthInsights() {
+  return [
+    { status: 'bad', rule: 'sales_slump', title: 'Rama9 sales below baseline 4 of last 7 days', detail: 'Average −22% vs 4-week same-weekday baseline.', action: 'Check operations first (staffing, stockouts, platform downtime). If ops is clean, run a traffic promo in the weekend daypart — Rama9 is your weekend-first branch.' },
+    { status: 'bad', rule: 'attachment_drop', title: 'Delivery add-on attachment dropped to 44.9%', detail: 'Down from 50.6% in the prior 4 weeks.', action: 'Check that add-on options and set menus are still visible and in stock on the Grab/LINE MAN storefront.' },
+    { status: 'good', rule: 'sales_surge', title: 'Gaysorn running +24% vs baseline', detail: '5 strong days in the last 7.', action: 'Identify the driver (campaign overlay, holiday, viral post) and repeat it deliberately. Verify stock and staffing can hold the new level.' },
+    { status: 'amplify', rule: 'set_opportunity', title: 'Set candidate: Pork-neck noodles + Thai iced tea', detail: '412 bills already pair these (lift 1.8). Target Take Away where only 49.7% of bills have add-ons.', action: 'Launch as a set at ฿105 on Take Away. Register it in the campaign plan so uplift and cannibalization are measured automatically.' },
+    { status: 'amplify', rule: 'peak_saturated', title: 'Silom 12:00 runs near capacity 74% of weekdays', detail: 'Lunch demand exceeds throughput — promos in this window waste budget.', action: 'Shift, don’t stoke: pre-order/Grab-and-go for 11:30, happy-hour pricing 13:30–16:00, route ad spend off-peak.' },
+    { status: 'amplify', rule: 'payday_pattern', title: 'OCC payday lift is 19%', detail: 'Sales on payday windows (1st/15th/month-end) consistently beat baseline.', action: 'Time premium sets and content to payday windows; discount mid-cycle instead.' },
+  ];
+}
+
+// marts.v_set_candidates — ranked set-menu suggestions
+function synthSetCandidates() {
+  return [
+    { anchor: 'S1 Pork-neck noodles', companion: 'Thai iced tea', lift: 1.8, bills: 412, price: 105, foodCost: 38.2, target: 'Take Away', score: 168 },
+    { anchor: 'N3 Dry tom yum deluxe', companion: 'Fried assortment', lift: 1.6, bills: 287, price: 130, foodCost: 41.7, target: 'Take Away', score: 131 },
+    { anchor: 'S1 Pork-neck noodles', companion: 'Minced-pork soup', lift: 1.5, bills: 244, price: 115, foodCost: 40.1, target: 'Take Away', score: 118 },
+    { anchor: 'N1 Dry tom yum', companion: 'Soft-boiled egg', lift: 1.4, bills: 198, price: 85, foodCost: 36.4, target: 'Take Away', score: 96 },
+  ];
+}
+
 function loadData() {
   return {
     synthetic: true,
+    insights: synthInsights(),
+    setCandidates: synthSetCandidates(),
     monthly: synthMonthly(),
     branchChannel: synthBranchChannel(),
     daypart: synthDaypart(),

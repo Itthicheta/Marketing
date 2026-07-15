@@ -21,7 +21,7 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 | Migration 0006 (RLS lockdown) | **Applied 2026-07-14.** RLS enabled on all 36 tables, no policies: public keys fully blocked; service role and SQL unaffected. |
 | Dashboard | **v1 LIVE (synthetic data)** at https://marketing.itthichet-a.workers.dev — Cloudflare Worker static assets, Git-connected, assets dir `dashboard/`. Owner decision: NO Access wall while data is synthetic; **Cloudflare Access becomes a hard prerequisite of phase 4** (before real POS data shows on the dashboard). Preview URLs disabled; production workers.dev toggle must stay ON. |
 | Ingestion | No feeds connected yet. `core.load_pos(from, to)` transform function is ready and tested. |
-| Alerts | Rules seeded; check functions deployed; **pg_cron live** (hourly checks :30, digest 02:00 UTC = 09:00 BKK) queueing into `ops.alert_queue`. LINE Edge Function not built (needs LINE OA credentials). |
+| Alerts | Rules seeded; check functions deployed; **pg_cron live**: hourly checks :30, digest 02:00 UTC, **insights 02:15 UTC** (ops.generate_insights). LINE Edge Function not built (needs LINE OA credentials). |
 | GitHub ↔ Supabase | Not connected; not required. Migrations are applied via the Supabase integration from Claude sessions. |
 
 ## Where things are
@@ -30,7 +30,8 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 - `docs/02-metrics-catalog.md` — all 35 metrics with formulas (note the add-on denominators from deck p.21)
 - `docs/03-system-design.md` — architecture, ingestion plan, alert rules, dashboard page map, roadmap
 - `docs/04-gap-analysis.md` — inventory by category + tiered gaps for further analysis
-- `supabase/migrations/` — 0001 raw+ops, 0002 dims+seeds, 0003 facts+plans, 0004 metric views, 0005 alerts, 0006 RLS (applied)
+- `docs/05-recommendation-engine.md` — set-menu recommender logic + insight-rule catalog
+- `supabase/migrations/` — 0001 raw+ops, 0002 dims+seeds, 0003 facts+plans, 0004 metric views, 0005 alerts, 0006 RLS, 0007 recommendation engine + insights + group A/B analytics (all applied)
 - `dashboard/` — Pages site (index.html, data.js synthetic adapter, README with deploy steps)
 
 ## Key design rules (do not violate)
@@ -58,7 +59,7 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 5. Accounting spend automation → ROI/budget pages
 6. Social APIs + listings/reviews ingest + Claude enrichment → Social/Reputation pages
 7. LINE OA webhook + `send-line-alerts` Edge Function + daily digest
-8. Competitor scraping; CRM link (repeat rate, RFM); Tier-1 gap views (item affinity, discount effectiveness, targets/pace, share of voice)
+8. Competitor scraping; CRM link (repeat rate, RFM); remaining Tier-1 gap views (targets/pace, share of voice) — item affinity + discount effectiveness shipped in 0007
 
 ## Change log (append-only)
 
@@ -77,3 +78,11 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 - **2026-07-14 (later)** — Owner connected Cloudflare to the repo; dashboard deployed as a Worker
   with static assets (not classic Pages) at https://marketing.itthichet-a.workers.dev. Pending:
   Cloudflare Access in front of the URL.
+- **2026-07-14 (later)** — Migration 0007 (validated locally, applied to Supabase): set-menu
+  recommendation engine (v_item_affinity market-basket stats + v_set_candidates with price/margin/
+  target logic), suggestion layer (ops.insights + generate_insights() with 9 rules: bad/good/amplify
+  -> action; cron 02:15 UTC), and group A+B analytics (payday/holiday effects, hour x DOW, Pareto/ABC,
+  peak saturation, void/discount trend, ramp curve, payment mix, price_change log + impact,
+  set_component + cannibalization, competitor menu prices + price positioning). New POS fields:
+  payment_method, is_voided (nullable-safe). docs/05 documents the logic. Dashboard: new
+  Suggestions page (insight cards + set-candidate table, synthetic preview).

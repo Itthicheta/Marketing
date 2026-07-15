@@ -193,6 +193,7 @@ function hbars(host, items, label, val, maxOverride, color) {
 // ---------- pages ----------
 const PAGES = [
   { id: 'overview', title: 'Overview', render: renderOverview },
+  { id: 'suggest', title: 'Suggestions', render: renderSuggestions },
   { id: 'dayparts', title: 'Dayparts', render: renderDayparts },
   { id: 'menu', title: 'Menu & Category', render: renderMenu },
   { id: 'basket', title: 'Basket & Add-on', render: renderBasket },
@@ -378,6 +379,45 @@ function renderWdWe(el) {
   clustered(el.querySelector('#wwSales'), 'Sales / day (฿)', r => r.salesPerDay, v => (v / 1000).toFixed(0) + 'k');
   clustered(el.querySelector('#wwOrders'), 'Orders / day', r => r.ordersPerDay, v => Math.round(v));
   clustered(el.querySelector('#wwAbs'), 'ABS (฿/bill)', r => r.abs, v => Math.round(v));
+}
+
+// ---------- Suggestions (ops.generate_insights + marts.v_set_candidates) ----------
+// Status colors from the reserved status palette (never reused for series),
+// always paired with an icon + text label — color never carries meaning alone.
+function renderSuggestions(el) {
+  const STATUS = {
+    bad:     { label: 'NEEDS ACTION', icon: '▲', color: '#d03b3b' },
+    good:    { label: 'WORKING',     icon: '✓', color: '#0ca30c' },
+    amplify: { label: 'AMPLIFY',     icon: '↗', color: 'var(--s1)' },
+  };
+  const order = ['bad', 'good', 'amplify'];
+  const cards = order.flatMap(st => D.insights.filter(i => i.status === st)).map(i => {
+    const s = STATUS[i.status];
+    return `<div class="card" style="border-left:3px solid ${s.color}">
+      <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">
+        <span style="color:${s.color};font-size:12px;font-weight:700">${s.icon} ${s.label}</span>
+        <span class="sub" style="margin:0">${i.rule}</span>
+      </div>
+      <h2 style="margin-top:6px">${i.title}</h2>
+      <div class="sub" style="margin-bottom:6px">${i.detail}</div>
+      <div><b>Action:</b> ${i.action}</div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="card"><h2>How this page works</h2>
+      <div class="sub" style="margin:0">Every night <code>ops.generate_insights()</code> evaluates the rule catalog over all metrics and writes what is <b>bad → action</b>, <b>good → action</b>, and <b>amplifiable → action</b>. Top items also go to the LINE digest. Rules are deterministic SQL — every suggestion traces to the exact bills behind it.</div>
+    </div>
+    ${cards}
+    <div class="card">
+      <h2>Set-menu candidates (recommendation engine)</h2>
+      <div class="sub">marts.v_set_candidates — anchors × companions customers already pair (lift &gt; 1), priced at 12% off à-la-carte rounded to a charm price, margin-checked, aimed at the weakest-attachment channel. See docs/05.</div>
+      <table>
+        <tr><th>#</th><th>Anchor (main dish)</th><th>Companion (add-on)</th><th class="num">Lift</th><th class="num">Bills together</th><th class="num">Suggested price</th><th class="num">Food cost %</th><th>Target</th><th class="num">Score</th></tr>
+        ${D.setCandidates.map((c, i) => `<tr><td>${i + 1}</td><td>${c.anchor}</td><td>${c.companion}</td>
+          <td class="num">${c.lift}</td><td class="num">${c.bills}</td><td class="num">฿${c.price}</td>
+          <td class="num">${c.foodCost}%</td><td>${c.target}</td><td class="num">${c.score}</td></tr>`).join('')}
+      </table>
+    </div>`;
 }
 
 // ---------- Placeholder ----------
