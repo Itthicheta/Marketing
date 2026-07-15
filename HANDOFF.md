@@ -21,7 +21,7 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 | Migration 0006 (RLS lockdown) | **Applied 2026-07-14.** RLS enabled on all 36 tables, no policies: public keys fully blocked; service role and SQL unaffected. |
 | Dashboard | **v1 LIVE (synthetic data)** at https://marketing.itthichet-a.workers.dev — Cloudflare Worker static assets, Git-connected, assets dir `dashboard/`. Owner decision: NO Access wall while data is synthetic; **Cloudflare Access becomes a hard prerequisite of phase 4** (before real POS data shows on the dashboard). Preview URLs disabled; production workers.dev toggle must stay ON. |
 | Ingestion | No feeds connected yet. `core.load_pos(from, to)` transform function is ready and tested. |
-| Alerts | Rules seeded; check functions deployed; **pg_cron live**: hourly checks :30, digest 02:00 UTC, **insights 02:15 UTC** (ops.generate_insights). LINE Edge Function not built (needs LINE OA credentials). |
+| Alerts | Rules seeded; check functions deployed; **pg_cron live**: hourly checks :30, digest 02:00 UTC, insights 02:15 UTC (**ops.run_insights** = generate_insights + check_set_verdicts). LINE Edge Function not built (needs LINE OA credentials). |
 | GitHub ↔ Supabase | Not connected; not required. Migrations are applied via the Supabase integration from Claude sessions. |
 
 ## Where things are
@@ -30,12 +30,16 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 - `docs/02-metrics-catalog.md` — all 35 metrics with formulas (note the add-on denominators from deck p.21)
 - `docs/03-system-design.md` — architecture, ingestion plan, alert rules, dashboard page map, roadmap
 - `docs/04-gap-analysis.md` — inventory by category + tiered gaps for further analysis
-- `docs/05-recommendation-engine.md` — set-menu recommender logic + insight-rule catalog
-- `supabase/migrations/` — 0001 raw+ops, 0002 dims+seeds, 0003 facts+plans, 0004 metric views, 0005 alerts, 0006 RLS, 0007 recommendation engine + insights + group A/B analytics (all applied)
+- `docs/05-recommendation-engine.md` — set-menu engine v2: 7-step logic, incremental-GP framework (owner-approved)
+- `docs/06-rule-catalog.md` — the full 31-rule suggestion-layer catalog with thresholds + delivery states (owner-approved)
+- `supabase/migrations/` — 0001 raw+ops, 0002 dims+seeds, 0003 facts+plans, 0004 metric views, 0005 alerts, 0006 RLS, 0007 rec engine + insights + A/B analytics, 0008 set engine v2 (incremental GP) — all applied
 - `dashboard/` — Pages site (index.html, data.js synthetic adapter, README with deploy steps)
 
 ## Key design rules (do not violate)
 
+0. Set-menu decisions use the **incremental-GP framework** (docs/05 step 5): compare
+   attacher gain α·P·g against pairer loss E·D; verdicts come from marts.v_set_pnl, never
+   from revenue alone. Insight rules must name a counterfactual and end in one action verb (docs/06).
 1. Dashboard reads **only** `marts.*`. All calculations live in SQL views, defined once.
 2. `raw` is append-only; `core` is always rebuildable from `raw` (see `core.load_pos`).
 3. Add-on metrics: % attachment divides by ALL bills; units-per-bill divides by bills WITH add-on; Set items excluded (deck p.21 methodology).
@@ -54,7 +58,7 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 
 ## Next phases (from docs/03 roadmap)
 
-3. POS ingest Edge Function + backfill; schedule pg_cron checks; menu master load
+3. POS ingest Edge Function + backfill; menu master + cost load (activates margin math in set engine); implement the 🔜 rules from docs/06 (daypart erosion, channel divergence, falling star, price/discount/void rules) with thresholds sanity-checked on real variance
 4. Dashboard v1 on Cloudflare Pages (Overview, Dayparts, Menu, Basket)
 5. Accounting spend automation → ROI/budget pages
 6. Social APIs + listings/reviews ingest + Claude enrichment → Social/Reputation pages
@@ -86,3 +90,10 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
   set_component + cannibalization, competitor menu prices + price positioning). New POS fields:
   payment_method, is_voided (nullable-safe). docs/05 documents the logic. Dashboard: new
   Suggestions page (insight cards + set-candidate table, synthetic preview).
+- **2026-07-14 (later)** — Discussion with owner finalized the set-menu economics: sets must grow
+  revenue AND gross profit; decision metric = incremental GP (attacher gain vs pairer loss).
+  Migration 0008 (validated locally, applied): v_set_candidates v2 with candidate classes
+  (attachment + revival with visibility-signature guard), P/E populations, gain_per_attacher,
+  breakeven_adoption_pct, projected_gp_at_10pct_adoption; v_set_pnl realized family-GP verdict;
+  set_verdict rule; cron consolidated into ops.run_insights(). docs/05 rewritten as the 7-step
+  owner-approved logic; docs/06 created as the approved 31-rule catalog with delivery states.

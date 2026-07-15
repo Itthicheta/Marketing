@@ -1,90 +1,89 @@
-# Recommendation Engine & Suggestion Layer
+# Set-Menu Recommendation Engine — finalized logic (v2)
 
-Two decision-support mechanisms built in migration 0007. Both are deterministic SQL —
-every suggestion can be traced back to the exact bills and thresholds that produced it.
+Owner-approved 2026-07-14. Implemented in `supabase/migrations/0008_set_engine_v2.sql`
+(`marts.v_set_candidates`, `marts.v_set_pnl`). The suggestion-layer rule catalog lives in
+`docs/06-rule-catalog.md`.
 
-## 1. Set-menu recommendation engine
+**Design goal (owner's framing):** a set must increase both revenue AND gross profit.
+Revenue up + GP down means the bundle discount leaked to customers who would have paid
+full price — cannibalization beat incrementality. Every step below exists to predict
+that outcome before launch and measure it after.
 
-**Question it answers:** "Which items should I bundle into a set, at what price, aimed where?"
+## Step 0 — Inputs
+Last 90 days of bill lines (window anchored to the newest data date, so backfills work);
+menu master with `price` and `unit_cost`. Without costs, steps 4–5 return NULL and
+ranking falls back to the behavioral score — the engine degrades gracefully, never guesses.
 
-### Pipeline
+## Step 1 — Pair statistics (`marts.v_item_affinity`)
+For item pair (a,b): N = all bills, n_a / n_b = bills with each item, n_ab = bills with both.
+- support = n_ab / N
+- confidence(a→b) = n_ab / n_a
+- **lift = n_ab·N / (n_a·n_b)** — co-occurrence vs chance. Lift ≈ 1 is coincidence and is
+  rejected; candidates need lift ≥ 1.1 and n_ab ≥ 20 (no small-sample ghosts).
 
-```
-bills (90d) ─▶ v_item_affinity ─▶ v_set_candidates ─▶ ranked suggestions
-                (pair statistics)   (score + price + target + rationale)
-```
+## Step 2 — Candidate generation (two classes)
+- **`attachment`** — anchor: top-10 main dish by traffic (a set must ride demand);
+  companion: an add-on item (drink/snack/dessert). The profit workhorse: add-ons are
+  cheap to make, so attaching them is nearly pure incremental margin.
+- **`revival`** — companion is a *slow* item (bills below menu median) that earns its
+  seat with BOTH: margin ≥ 55% AND the **visibility signature** (lift ≥ 1.3 with the
+  anchor despite low volume → the people who find it love pairing it → bundling fixes
+  discoverability). Slow items with flat lift everywhere are an *appeal* problem —
+  they go to the menu-tail curation rule, never into a bundle (a bad companion
+  devalues the hero anchor).
+- (Group Sets — multiple mains for tables/sharing — are a share-of-wallet play judged
+  manually from the combination-pattern views, not scored by this engine.)
 
-**Step 1 — affinity (`marts.v_item_affinity`).** For every item pair over the last 90 days
-of data (Sets excluded, min 20 shared bills):
-- `support` = share of all bills containing both items
-- `confidence(a→b)` = of bills with item a, share that also had b
-- `lift` = observed co-occurrence ÷ expected-if-independent. **Lift > 1 means customers
-  actively combine these**; lift ≈ 1 is coincidence. Verified in testing: independently
-  ordered items score exactly 1.0 and are filtered out.
+## Step 3 — Pricing
+list_sum = anchor price + companion price → **suggested_price = list_sum × 0.88,
+floored to a ฿5 charm price** → discount D = list_sum − suggested_price.
+The 12% depth is a starting default; Step 5 shows when it must be shallower.
 
-**Step 2 — candidates (`marts.v_set_candidates`).** 
-- **Anchor**: top-10 main dishes by units (a set must be carried by a high-traffic dish).
-- **Companion**: an add-on item (drink/snack/dessert) with lift ≥ 1.1 to the anchor.
-- **Price**: à-la-carte sum × 0.88, floored to a ฿5 charm price.
-- **Margin guard**: combined `food_cost_pct` computed when unit costs exist — reject/flag
-  candidates above ~45%.
-- **Target**: the channel with the lowest add-on attachment (the measured revenue gap,
-  per deck p.20–23) — that's where the set earns incremental money instead of repackaging.
-- **Score** = lift × ln(1 + shared bills) × anchor-traffic weight. Transparent, monotone,
-  no magic.
-- Every row carries a plain-language `rationale`.
+## Step 4 — Margin math (needs the cost file)
+- set margin = suggested_price − cost_anchor − cost_companion
+- **food-cost guard**: (cost_a + cost_b) ÷ suggested_price ≤ 45%, else `fails_margin_guard`.
 
-### Closing the loop
-When a set launches: register its recipe in `core.set_component` and the launch in
-`core.plan_campaign`. Then:
-- `marts.v_set_cannibalization` — component à-la-carte volume before vs after launch
-  (did the set create new revenue or repackage old revenue?)
-- `marts.v_campaign_uplift` — total sales vs baseline during the set campaign.
+## Step 5 — The decision number: projected incremental gross profit
+Two populations from the same 90 days:
+- **P (potential attachers)** = bills with anchor but WITHOUT companion — the market
+  the set is aimed at
+- **E (existing pairers)** = bills already containing both — the cannibalization exposure
 
-## 2. Suggestion / insight layer
+Per converted attacher, gain **g = suggested_price − anchor_price − cost_companion**
+(they pay more than anchor-alone; the only extra cost is the companion).
+Per switching pairer, loss = **D** (they'd have paid the full sum). Worst case assumes
+all E switch. With adoption rate α of P:
 
-**Question it answers:** "What is bad → do this. What is good → do this. What can be
-amplified → do this."
+> **Projected ΔGP = α·P·g − E·D**
+> **Break-even adoption α\* = (E·D) ÷ (P·g)**
 
-### Mechanism
-`ops.generate_insights()` runs nightly (pg_cron `marketing-insights`, 09:15 Bangkok).
-Each rule is a SQL condition over the marts + an action template. Results land in
-`ops.insights` (deduped per rule × entity × period), surfaced via `marts.v_insights`
-on the dashboard Suggestions page, and the top items go into the LINE digest.
+Interpretation: α\* is "what share of anchor-only buyers must upgrade before the set
+stops losing money." Low α\* (a few %) = safe; high α\* = the discount leaks faster than
+attach can recover — shrink D or pick a cheaper/higher-margin companion.
 
-### Rule catalog (v1)
+Worked example: S1 ฿89/cost ฿32 + drink ฿25/cost ฿8.
+At 12% off → set ฿100, D=14, g=3 → almost unwinnable. At 8% → set ฿105, D=9, g=8;
+with P=5,000, E=1,000: α\* = 9,000/40,000 = **22.5%** — marginal; the engine ranks a
+lower-E or higher-margin companion above it. Note how the framework *sets the discount
+depth*, not just the pairing.
 
-| Rule | Status | Fires when | Action template |
-|---|---|---|---|
-| sales_slump | bad | branch < baseline −15% on ≥3 of last 7 days | check ops first, then daypart promo + competitor scan |
-| sales_surge | good | branch > baseline +20% on ≥3 of last 7 days | find the driver, repeat deliberately, secure stock/staff |
-| attachment_drop | bad | channel attachment −3pts vs prior 4 weeks | re-brief upsell / fix storefront add-on visibility |
-| set_opportunity | amplify | top-ranked set candidate exists | launch the set, register for measurement |
-| rising_item | amplify | item units +20% vs prior 4 weeks (min volume) | feature in content batch, pin higher on delivery |
-| menu_tail | bad | ≥15 items produce the last 5% of sales | apply the agency curation rule (deck p.58) |
-| payday_pattern | amplify | payday lift > 15% | premium pushes on payday, discounts mid-cycle |
-| peak_saturated | amplify | branch-hour near capacity ≥60% of weekdays | shift demand off-peak instead of promoting into a full house |
-| review_theme_spike | bad | complaint theme 2× prior month, ≥3 mentions | route to ops with review texts, reply, re-check |
+View columns: `potential_attachers`, `existing_pairers`, `gain_per_attacher`,
+`breakeven_adoption_pct`, `projected_gp_at_10pct_adoption` (conservative α=10% used
+for ranking), plus `behavior_score` (lift × ln(1+n_ab) × traffic weight) as tiebreak
+and pre-cost fallback.
 
-The catalog grows as feeds arrive (budget overrun, content-lift, CPO-drift rules come
-with phases 5–6). A weekly Claude narrative pass over `ops.insights` is planned as a
-layer on top — the rules stay the auditable source of truth.
+## Step 6 — Targeting
+Target channel = the one with the lowest add-on attachment (the measured gap, deck
+p.20–23). The more un-attached the target population, the higher the incremental
+share of set buyers — Step 5's math is *why* this targeting rule works.
 
-## 3. Group A+B analytics added alongside (same migration)
+## Step 7 — Launch → measure → verdict (`marts.v_set_pnl` + `set_verdict` rule)
+On launch: create the set SKU (`is_set=true`), record its recipe in `core.set_component`,
+register the campaign. From day 28 the P&L view compares **actual gross profit per day of
+the whole family (set + its components sold standalone) after vs the 28 days before**:
+- `delta_gp_per_day ≥ 0` → insight **good**: scale (push channel, content, more branches)
+- `delta_gp_per_day < 0` → insight **bad**: cannibalization won — reprice, swap companion,
+  or kill; re-verdict 28 days after any change.
 
-| View | What it answers |
-|---|---|
-| `v_payday_effect` / `v_holiday_effect` | real lift per payday window / per named holiday |
-| `v_hour_dow` | full hour × day-of-week grid per branch |
-| `v_pareto` | ABC classification, cumulative revenue share |
-| `v_peak_saturation` | which branch-hours run at capacity (promo waste detector) |
-| `v_void_discount_trend` | void rate, discount depth per branch-month |
-| `v_ramp_curve` | weekly sales by weeks-since-open (new-branch reference) |
-| `v_payment_mix` | cash/QR/card mix (tourist proxy) — needs `payment_method` from POS |
-| `v_price_change_impact` | qty/day 28d before vs after every logged price change |
-| `v_price_position` | own vs competitor median menu price × rating |
-| `v_set_cannibalization` | set launch vs component à-la-carte volume |
-
-New inputs these rely on: `core.price_change` (log every price change),
-`core.set_component` (set recipes), `raw.competitor_menu_items` (scraped competitor
-menus), and POS fields `payment_method` / `is_voided` (nullable — work without them).
+This is the empirical answer to "did it grow profit or just repackage revenue" — measured,
+not assumed, for every set, automatically.
