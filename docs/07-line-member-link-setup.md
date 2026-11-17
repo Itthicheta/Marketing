@@ -14,7 +14,17 @@
 1. OA Manager → Settings → Messaging API → Webhook URL: `https://qtpwrwapbefczvqdfzes.supabase.co/functions/v1/line-webhook` → Save.
 2. Supabase Marketing → Edge Functions → Secrets: `LINE_CHANNEL_ID` = 2009768336, `LINE_CHANNEL_SECRET` = the secret on that page.
 3. OA Manager → Response settings: Chat on, Greeting on, Auto-response off, **Webhook on** (only after step 2).
-4. Greeting text (below). OA Manager rich menu: none active.
+4. Greeting text (Point 2026-11-17, final):
+   ```
+   สวัสดีค่ะ ขอบคุณที่เพิ่มเพื่อนกับ Mama Pook 🍜
+
+   สมัครสมาชิกเพียงพิมพ์เบอร์โทรที่ใช้ 10 หลัก ส่งมาในแชตนี้ (เช่น 0812345678)
+
+   ✅ รับฟรี เก๊กฮวย 1 แก้ว มูลค่า 69 บาท ในการมาครั้งถัดไป
+   ✅ รับสิทธิพิเศษ และคูปองต่างๆ มากมาย ทุกเดือน
+   ✅ สะสมแต้ม 100 บาท = 1 แต้ม เพื่อแลกของฟรี
+   ```
+   OA Manager rich menu: none active. Coupon title (`crm.settings.reward_text`) = เก๊กฮวยฟรี 1 แก้ว (มูลค่า 69 บาท).
 5. Two menu images to Claude (2500 × 843); Claude uploads + runs `line-menu-setup`.
 6. POS: create the "LINE เก๊กฮวยฟรี" coupon.
 7. Tests: as in Part D, except "Tap Member card" now returns a card message; "ใช้สิทธิ์" asks ยืนยัน/ยกเลิก before marking used.
