@@ -66,6 +66,14 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
 7. LINE OA webhook + `send-line-alerts` Edge Function + daily digest
 8. Competitor scraping; CRM link (repeat rate, RFM); remaining Tier-1 gap views (targets/pace, share of voice) — item affinity + discount effectiveness shipped in 0007
 
+## LINE member link (live 2026-11-17)
+Phone-number link between LINE friends of @mamapook and POS members, with a next-visit
+เก๊กฮวย coupon redeemed on the member card. Schema `crm` (migration 0009), Edge Functions
+`line-webhook`, `member-card`, `line-menu-setup` (source `supabase/functions/`), card page
+`member-card-page/` on Cloudflare (`mamapook-member.itthichet-a.workers.dev`). Inert until the
+owner enters the LINE secrets. Full decisions, addresses and the owner checklist:
+`docs/07-line-member-link-setup.md`. Design: LINE Member Link Playbook (sales site `#mk-crm`).
+
 ## Change log (append-only)
 
 - **2026-07-14** — Screened the 77-page agency deck into docs/01–03; built and locally validated
@@ -103,3 +111,4 @@ alerts (anomalies, bad reviews, late data, competitor promos, daily digest).
   Added operation-log-starter/ (CLAUDE.md guardrails + SETUP.md) for the owner to copy into a new
   operation-log repo; new Claude sessions on that repo are scoped by its CLAUDE.md. Design rule 7
   added: Marketing never touches operation_log.* and vice versa.
+- 2026-11-17 — LINE member link built and deployed (crm schema, 3 Edge Functions, card page); waiting on owner LINE steps A, 9, 11–13, 15. See docs/07.

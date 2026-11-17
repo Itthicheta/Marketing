@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>บัตรสมาชิก Mama Pook</title>
+<!-- Member card page (LIFF app "Member card", LINE Member Link Playbook). Opens inside LINE from the
+     Member card rich menu. Talks only to the member-card Edge Function, which verifies LINE's ID token. -->
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<style>
+  :root { --red:#c8102e; --ink:#1d1d1f; --mute:#6e6e73; --line:#e5e5ea; --ok:#1a7f3c; --bg:#faf7f2; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system, "Sukhumvit Set", "Noto Sans Thai", system-ui, sans-serif;
+         background:var(--bg); color:var(--ink); min-height:100vh; }
+  .wrap { max-width:440px; margin:0 auto; padding:24px 18px 40px; }
+  .brand { text-align:center; font-weight:800; font-size:22px; color:var(--red); letter-spacing:.5px; }
+  .sub { text-align:center; color:var(--mute); font-size:14px; margin-top:2px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:18px; padding:22px 18px; margin-top:18px;
+          box-shadow:0 4px 18px rgba(0,0,0,.05); }
+  .label { color:var(--mute); font-size:14px; text-align:center; }
+  .phone { font-size:44px; font-weight:800; text-align:center; letter-spacing:2px; margin:6px 0 4px;
+           font-variant-numeric:tabular-nums; }
+  .hint { text-align:center; font-size:15px; margin-top:6px; }
+  button { font:inherit; border:0; border-radius:12px; padding:12px 16px; cursor:pointer; }
+  .copy { display:block; margin:12px auto 0; background:#f2f2f7; color:var(--ink); font-size:15px; }
+  .coupon { border:2px dashed var(--red); border-radius:14px; padding:16px; margin-top:14px; text-align:center; }
+  .coupon .t { font-size:20px; font-weight:700; }
+  .coupon .d { color:var(--mute); font-size:14px; margin-top:4px; }
+  .coupon .use { margin-top:12px; width:100%; background:var(--red); color:#fff; font-size:17px; font-weight:700; }
+  .coupon.used, .coupon.soon { border-color:var(--line); color:var(--mute); }
+  .coupon.used .t { text-decoration:line-through; }
+  .ok { color:var(--ok); font-weight:700; margin-top:8px; }
+  .msg { text-align:center; font-size:16px; line-height:1.6; }
+  .close { display:block; margin:16px auto 0; background:var(--red); color:#fff; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand" id="brand">Mama Pook</div>
+  <div class="sub">บัตรสมาชิก</div>
+  <div id="app" class="card"><div class="msg">กำลังโหลด…</div></div>
+</div>
+<script>
+const API = 'https://qtpwrwapbefczvqdfzes.supabase.co/functions/v1/member-card';
+const app = document.getElementById('app');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const th = iso => iso ? iso.slice(8,10) + '/' + iso.slice(5,7) + '/' + iso.slice(0,4) : '';
+const fmt = p => p.slice(0,3) + '-' + p.slice(3,6) + '-' + p.slice(6);
+let idToken = null;
+
+function closeBtn() { return liff.isInClient() ? '<button class="close" onclick="liff.closeWindow()">กลับไปที่แชต</button>' : ''; }
+function fail(text) { app.innerHTML = `<div class="msg">${text}</div>` + (typeof liff !== 'undefined' ? closeBtn() : ''); }
+
+function coupon(c) {
+  if (c.status === 'used') return `<div class="coupon used"><div class="t">${esc(c.title)}</div>
+      <div class="ok">ใช้สิทธิ์แล้ว ${esc(c.redeemed_at.slice(11))} น.</div></div>`;
+  if (c.status === 'soon') return `<div class="coupon soon"><div class="t">${esc(c.title)}</div>
+      <div class="d">ใช้ได้ในการมาครั้งถัดไป ตั้งแต่ ${th(c.valid_from)} ถึง ${th(c.valid_to)}</div></div>`;
+  return `<div class="coupon"><div class="t">${esc(c.title)}</div>
+      <div class="d">ใช้ได้ถึง ${th(c.valid_to)}</div>
+      <button class="use" onclick="redeem(${Number(c.id)}, '${esc(c.title)}')">ใช้สิทธิ์ (สำหรับพนักงาน)</button></div>`;
+}
+
+function render(d) {
+  if (!d.registered) {
+    app.innerHTML = `<div class="msg">ยังไม่ได้ลงทะเบียนค่ะ<br>พิมพ์เบอร์โทรที่ใช้สะสมแต้ม 10 หลัก<br>ส่งมาในแชต Mama Pook ได้เลยค่ะ</div>` + closeBtn();
+    return;
+  }
+  app.innerHTML = `<div class="label">เบอร์สมาชิก${d.name ? ' · ' + esc(d.name) : ''}</div>
+    <div class="phone">${fmt(d.phone)}</div>
+    <div class="hint">แสดงหน้านี้ให้แคชเชียร์เพื่อสะสมแต้ม</div>
+    <button class="copy" onclick="copyPhone('${d.phone}')">คัดลอกเบอร์</button>
+    ${(d.coupons || []).map(coupon).join('')}`;
+}
+
+async function call(body) {
+  const r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (r.status === 401) throw new Error('auth');
+  if (!r.ok) throw new Error('http ' + r.status);
+  return r.json();
+}
+
+async function copyPhone(p) {
+  try { await navigator.clipboard.writeText(p); } catch (e) { /* older LINE webviews */ }
+  const b = document.querySelector('.copy'); if (b) { b.textContent = 'คัดลอกแล้ว ✓'; setTimeout(() => b.textContent = 'คัดลอกเบอร์', 1500); }
+}
+
+async function redeem(id, title) {
+  if (!confirm(`พนักงาน: ยืนยันใช้สิทธิ์ "${title}" ?\nอย่าลืมใส่คูปองในบิลที่ POS`)) return;
+  try {
+    const d = await call({ id_token: idToken, redeem: id });
+    render(d);
+    if (!d.redeemed) alert('ใช้สิทธิ์ไม่ได้ (ใช้ไปแล้ว หรือยังไม่ถึงวันที่ใช้ได้)');
+  } catch (e) { alert('เชื่อมต่อไม่ได้ ลองใหม่อีกครั้งค่ะ'); }
+}
+
+(async () => {
+  try {
+    const cfg = await fetch(API).then(r => r.json());
+    if (cfg.brand) document.getElementById('brand').textContent = cfg.brand;
+    if (!cfg.liff_id) return fail('ระบบบัตรสมาชิกยังไม่เปิดใช้งานค่ะ');
+    await liff.init({ liffId: cfg.liff_id });
+    if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+    idToken = liff.getIDToken();
+    render(await call({ id_token: idToken }));
+  } catch (e) {
+    fail(e.message === 'auth' ? 'ยืนยันตัวตนไม่สำเร็จ ปิดแล้วเปิดใหม่อีกครั้งค่ะ' : 'โหลดไม่สำเร็จ ตรวจสอบอินเทอร์เน็ต หรือแจ้งเบอร์กับแคชเชียร์ได้เลยค่ะ');
+  }
+})();
+</script>
+</body>
+</html>
