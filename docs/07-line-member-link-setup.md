@@ -21,6 +21,11 @@ postback `oaPlusRichMenu=true&richMenuId=default&actionId=<id>&version=<n>`. The
 (`menu_action_card` = vjUpcXcCtD541roC, `menu_action_coupons` = FULFZq1xez8kuj8Q at menu version 13). Editing the
 menu in the OA Manager may change them; unmapped ids are logged as "unmapped OA menu action" in the function logs.
 `line-menu-setup` (script menus) is NOT used in v3; running it would override the OA Manager menu.
+Per-person (migration 0011, 2026-11-17): `crm.line_coupon_list.audience` = 'all' or a group name; for a group,
+the LINE user IDs Claude exported as the OA Manager "User ID upload" file go into `crm.line_coupon_targets`
+(coupon_id, line_user_id). The COUPONS button shows a member only 'all' coupons plus those targeted to them.
+Getting the customer link: OA Manager → Coupons → "⋯" next to the coupon → **Share** → "Share on social media
+(copy coupon URL)", a `https://lin.ee/...` link. (The coupon's own admin page has no link; "Copy" duplicates the coupon.)
 Add a coupon to the list:
 ```sql
 insert into crm.line_coupon_list (title, url, valid_from, valid_to) values ('ส่วนลด 20 บาท สำหรับสมาชิก', '<share URL>', '2026-12-01', '2026-12-15');

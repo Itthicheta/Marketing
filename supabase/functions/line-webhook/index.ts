@@ -8,7 +8,8 @@
 // free reply (Flex message) with the number, the coupon and a two-step "ใช้สิทธิ์" button.
 // v3 2026-11-17 — the rich menu is built by Point in the OA Manager (6 buttons). MEMBERS and COUPONS
 // are "Text" actions that send a fixed word; the webhook answers those words (KEYWORDS below).
-// COUPONS lists the running LINE built-in coupons from crm.line_coupon_list (members only).
+// COUPONS lists the running LINE built-in coupons from crm.line_coupon_list sent to that member
+// (audience 'all' or a target group in crm.line_coupon_targets); members only.
 // NOTE: an OA Manager menu "Text" button does NOT deliver its text to the webhook; LINE sends a postback
 // "oaPlusRichMenu=true&richMenuId=default&actionId=<id>&version=<n>". The two ids are mapped in
 // crm.settings (menu_action_card, menu_action_coupons). Editing the menu in the OA Manager may change
@@ -206,13 +207,16 @@ async function onPhone(userId: string, replyToken: string, phone: string) {
   await linkMemberMenu(userId, s);
 }
 
-// COUPONS button: running LINE built-in coupons, one box each with an open button (max 10).
-async function couponList() {
+// COUPONS button: the LINE built-in coupons sent to THIS member (audience 'all', or listed in
+// crm.line_coupon_targets) and running today; one box each with an open button (max 10).
+async function couponList(userId: string) {
   const t = bkkDate();
   const rows = await sql`
-    select title, url, image_url, to_char(valid_to,'YYYY-MM-DD') vt from crm.line_coupon_list
-    where active and ${t}::date between valid_from and valid_to
-    order by sort, valid_to limit 10`;
+    select l.title, l.url, l.image_url, to_char(l.valid_to,'YYYY-MM-DD') vt from crm.line_coupon_list l
+    where l.active and ${t}::date between l.valid_from and l.valid_to
+      and (l.audience = 'all'
+           or exists (select 1 from crm.line_coupon_targets x where x.coupon_id = l.id and x.line_user_id = ${userId}))
+    order by l.sort, l.valid_to limit 10`;
   if (!rows.length) return null;
   return {
     type: "flex", altText: "คูปองของฉัน",
@@ -240,7 +244,7 @@ async function onMenu(userId: string, replyToken: string, what: "card" | "coupon
   }
   await linkMemberMenu(userId, await settings());
   if (what === "coupons") {
-    const list = await couponList();
+    const list = await couponList(userId);
     const note = { type: "text", text: "แตะ \"เปิดคูปอง\" แล้วกด \"ใช้คูปอง\" ต่อหน้าพนักงานค่ะ\nคูปองเก๊กฮวยสมาชิกอยู่ที่ปุ่ม \"MEMBERS\" ค่ะ" };
     return list ? send(replyToken, [note, list]) : reply(replyToken, "ยังไม่มีคูปองใหม่ค่ะ ติดตามได้เร็วๆ นี้\nคูปองเก๊กฮวยสมาชิกอยู่ที่ปุ่ม \"MEMBERS\" ค่ะ");
   }
