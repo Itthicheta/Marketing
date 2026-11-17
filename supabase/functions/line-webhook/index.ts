@@ -6,6 +6,9 @@
 // v2 2026-11-17 — card-message version: @mamapook's Messaging API channel sits under a provider
 // Point's console login can't reach, so there is no LINE Login/LIFF channel. The member card is a
 // free reply (Flex message) with the number, the coupon and a two-step "ใช้สิทธิ์" button.
+// v3 2026-11-17 — the rich menu is built by Point in the OA Manager (6 buttons). MEMBERS and COUPONS
+// are "Text" actions that send a fixed word; the webhook answers those words (KEYWORDS below).
+// COUPONS lists the running LINE built-in coupons from crm.line_coupon_list (members only).
 // Secrets (Edge Functions → Secrets): LINE_CHANNEL_ID, LINE_CHANNEL_SECRET. The script mints its own
 // short-lived stateless access token from those two (no Developers Console needed). An optional
 // LINE_CHANNEL_ACCESS_TOKEN, if ever set, is used instead.
@@ -102,7 +105,13 @@ const MSG = {
   confirm: (p: string, reward: string, from: string, to: string) =>
     `ลงทะเบียนเรียบร้อยค่ะ เบอร์สมาชิก ${fmtPhone(p)}\n` +
     `รับ${reward} ในการมาครั้งถัดไป ใช้ได้ ${thDate(from)} ถึง ${thDate(to)}\n` +
-    `ครั้งหน้ากดปุ่ม "บัตรสมาชิก" ด้านล่าง แล้วแสดงให้แคชเชียร์ได้เลยค่ะ`,
+    `ครั้งหน้ากดปุ่ม "MEMBERS" ที่เมนูด้านล่าง แล้วแสดงบัตรให้แคชเชียร์ได้เลยค่ะ`,
+};
+
+// Words sent by the OA Manager menu's "Text" buttons (and anything a customer types that matches).
+const KEYWORDS: Record<string, "card" | "coupons"> = {
+  "บัตรสมาชิก": "card", "สมาชิก": "card", "members": "card", "member": "card",
+  "คูปองของฉัน": "coupons", "คูปอง": "coupons", "coupons": "coupons", "coupon": "coupons",
 };
 
 const RED = "#C8102E", GREY = "#8E8E93";
@@ -193,6 +202,47 @@ async function onPhone(userId: string, replyToken: string, phone: string) {
   await linkMemberMenu(userId, s);
 }
 
+// COUPONS button: running LINE built-in coupons, one box each with an open button (max 10).
+async function couponList() {
+  const t = bkkDate();
+  const rows = await sql`
+    select title, url, image_url, to_char(valid_to,'YYYY-MM-DD') vt from crm.line_coupon_list
+    where active and ${t}::date between valid_from and valid_to
+    order by sort, valid_to limit 10`;
+  if (!rows.length) return null;
+  return {
+    type: "flex", altText: "คูปองของฉัน",
+    contents: { type: "carousel", contents: rows.map((r) => ({
+      type: "bubble", size: "kilo",
+      ...(r.image_url ? { hero: { type: "image", url: r.image_url, size: "full", aspectMode: "cover", aspectRatio: "20:13" } } : {}),
+      body: { type: "box", layout: "vertical", spacing: "sm", contents: [
+        txt(r.title, { weight: "bold", size: "md" }),
+        txt(`ใช้ได้ถึง ${thDate(r.vt)}`, { size: "xs", color: GREY }),
+      ] },
+      footer: { type: "box", layout: "vertical", contents: [{
+        type: "button", style: "primary", color: RED, height: "sm",
+        action: { type: "uri", label: "เปิดคูปอง", uri: r.url },
+      }] },
+    })) },
+  };
+}
+
+// MEMBERS / COUPONS taps (menu text words or postbacks). Non-members get the register prompt.
+async function onMenu(userId: string, replyToken: string, what: "card" | "coupons" | "register") {
+  await ensureMember(userId);
+  const card = await memberCard(userId);
+  if (!card) {
+    return reply(replyToken, what === "coupons" ? "สมัครสมาชิกก่อนเพื่อรับคูปองค่ะ\n" + MSG.register : MSG.register);
+  }
+  await linkMemberMenu(userId, await settings());
+  if (what === "coupons") {
+    const list = await couponList();
+    const note = { type: "text", text: "แตะ \"เปิดคูปอง\" แล้วกด \"ใช้คูปอง\" ต่อหน้าพนักงานค่ะ\nคูปองเก๊กฮวยสมาชิกอยู่ที่ปุ่ม \"MEMBERS\" ค่ะ" };
+    return list ? send(replyToken, [note, list]) : reply(replyToken, "ยังไม่มีคูปองใหม่ค่ะ ติดตามได้เร็วๆ นี้\nคูปองเก๊กฮวยสมาชิกอยู่ที่ปุ่ม \"MEMBERS\" ค่ะ");
+  }
+  return send(replyToken, what === "register" ? [{ type: "text", text: MSG.already }, card] : [card]);
+}
+
 // Two-step redeem: the button asks for confirmation; only "ยืนยัน" marks the coupon used.
 async function onRedeem(userId: string, replyToken: string, id: number, confirmed: boolean) {
   const [c] = await sql`
@@ -235,16 +285,13 @@ async function handle(ev: any) {
   if (ev.type === "postback") {
     const q = new URLSearchParams(ev.postback?.data ?? "");
     const action = q.get("action");
-    if (action === "register" || action === "card") {
-      await ensureMember(userId);
-      const card = await memberCard(userId);
-      if (card) { await linkMemberMenu(userId, await settings()); return send(ev.replyToken, action === "register" ? [{ type: "text", text: MSG.already }, card] : [card]); }
-      return reply(ev.replyToken, MSG.register);
-    }
+    if (action === "register" || action === "card" || action === "coupons") return onMenu(userId, ev.replyToken, action);
     if (action === "redeem" || action === "redeem_ok") return onRedeem(userId, ev.replyToken, Number(q.get("id")), action === "redeem_ok");
     return;                                                            // noop / unknown
   }
   if (ev.type === "message" && ev.message?.type === "text") {
+    const word = KEYWORDS[(ev.message.text ?? "").trim().toLowerCase()];
+    if (word) return onMenu(userId, ev.replyToken, word);
     const { digitLike, phone } = cleanNumber(ev.message.text ?? "");
     if (!digitLike) return;                                            // ordinary chat: stay silent for staff
     await ensureMember(userId);

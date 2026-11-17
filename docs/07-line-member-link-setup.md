@@ -10,6 +10,18 @@
 > is ever found. The channel secret was shown in a screenshot on 2026-11-17 and cannot be reissued
 > without that provider: reissue it if the provider turns up.
 
+## v3 (2026-11-17): Point's own 6-button rich menu in the OA Manager
+MEMBERS | COUPONS | OUR MENU / LOCATIONS | DELIVERY | CATERING. Buttons 3–6 are Point's links in the OA Manager.
+MEMBERS and COUPONS use the OA Manager action type **Text**, sending `บัตรสมาชิก` and `คูปองของฉัน`; the webhook
+answers those words (also members/member/สมาชิก, coupons/coupon/คูปอง). Non-members get the register prompt.
+COUPONS lists rows of `crm.line_coupon_list` (migration 0010) whose dates include today: title, LINE coupon share URL,
+optional image, valid_from/valid_to. LINE enforces one use per person for its built-in coupons.
+`line-menu-setup` (script menus) is NOT used in v3; running it would override the OA Manager menu.
+Add a coupon to the list:
+```sql
+insert into crm.line_coupon_list (title, url, valid_from, valid_to) values ('ส่วนลด 20 บาท สำหรับสมาชิก', '<share URL>', '2026-12-01', '2026-12-15');
+```
+
 ## Owner checklist — v2 (replaces Parts A–C below)
 1. OA Manager → Settings → Messaging API → Webhook URL: `https://qtpwrwapbefczvqdfzes.supabase.co/functions/v1/line-webhook` → Save.
 2. Supabase Marketing → Edge Functions → Secrets: `LINE_CHANNEL_ID` = 2009768336, `LINE_CHANNEL_SECRET` = the secret on that page.
