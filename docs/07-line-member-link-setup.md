@@ -1,5 +1,25 @@
 # LINE member link — setup checklist and what is live (2026-11-17)
 
+> **v2, same day: card-message version.** @mamapook's Messaging API channel (ID 2009768336) sits under
+> a provider Point's LINE Developers login cannot see (Point is the only OA Administrator; checked
+> Developers Console providers, direct channel URL = 404). So no LINE Login/LIFF channel can be made under
+> the same provider. Instead: the script mints its own short-lived access token from channel ID + secret
+> (stateless token, `oauth2/v3/token`), the Member card button sends a postback, and the webhook replies
+> with a Flex card (number + coupon + two-step "ใช้สิทธิ์"). Replies are free. The LIFF pieces below
+> (`member-card` function, `member-card-page/`, mamapook-member site) are PARKED, kept for if the provider
+> is ever found. The channel secret was shown in a screenshot on 2026-11-17 and cannot be reissued
+> without that provider: reissue it if the provider turns up.
+
+## Owner checklist — v2 (replaces Parts A–C below)
+1. OA Manager → Settings → Messaging API → Webhook URL: `https://qtpwrwapbefczvqdfzes.supabase.co/functions/v1/line-webhook` → Save.
+2. Supabase Marketing → Edge Functions → Secrets: `LINE_CHANNEL_ID` = 2009768336, `LINE_CHANNEL_SECRET` = the secret on that page.
+3. OA Manager → Response settings: Chat on, Greeting on, Auto-response off, **Webhook on** (only after step 2).
+4. Greeting text (below). OA Manager rich menu: none active.
+5. Two menu images to Claude (2500 × 843); Claude uploads + runs `line-menu-setup`.
+6. POS: create the "LINE เก๊กฮวยฟรี" coupon.
+7. Tests: as in Part D, except "Tap Member card" now returns a card message; "ใช้สิทธิ์" asks ยืนยัน/ยกเลิก before marking used.
+
+
 Source design: "LINE Member Link Playbook" (sales site → Marketing → CRM tab, `#mk-crm`).
 This file records the decisions, what Claude built, and the owner's remaining clicks.
 

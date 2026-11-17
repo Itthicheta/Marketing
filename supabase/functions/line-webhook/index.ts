@@ -3,14 +3,36 @@
 // (2) logs every event to raw.line_events (LINE never re-sends a text), (3) saves the
 // LINE user + phone, issues the next-visit เก๊กฮวย coupon, replies, and switches the
 // customer's rich menu. Ordinary chat gets NO reply so staff can answer by hand.
-// Secrets (Edge Functions → Secrets): LINE_CHANNEL_SECRET, LINE_CHANNEL_ACCESS_TOKEN.
+// v2 2026-11-17 — card-message version: @mamapook's Messaging API channel sits under a provider
+// Point's console login can't reach, so there is no LINE Login/LIFF channel. The member card is a
+// free reply (Flex message) with the number, the coupon and a two-step "ใช้สิทธิ์" button.
+// Secrets (Edge Functions → Secrets): LINE_CHANNEL_ID, LINE_CHANNEL_SECRET. The script mints its own
+// short-lived stateless access token from those two (no Developers Console needed). An optional
+// LINE_CHANNEL_ACCESS_TOKEN, if ever set, is used instead.
 // Deploy with verify_jwt = false (LINE cannot send a Supabase JWT; the signature is the guard).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
 const SECRET = Deno.env.get("LINE_CHANNEL_SECRET") ?? "";
-const TOKEN = Deno.env.get("LINE_CHANNEL_ACCESS_TOKEN") ?? "";
+const CHANNEL_ID = Deno.env.get("LINE_CHANNEL_ID") ?? "";
+const FIXED_TOKEN = Deno.env.get("LINE_CHANNEL_ACCESS_TOKEN") ?? "";
 const API = "https://api.line.me/v2/bot";
+
+// Stateless channel access token (valid 15 min): issued from channel id + secret, cached per instance.
+let cached = { token: "", until: 0 };
+async function token(): Promise<string> {
+  if (FIXED_TOKEN) return FIXED_TOKEN;
+  if (cached.token && Date.now() < cached.until) return cached.token;
+  const r = await fetch("https://api.line.me/oauth2/v3/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "client_credentials", client_id: CHANNEL_ID, client_secret: SECRET }),
+  });
+  if (!r.ok) throw new Error(`token ${r.status} ${await r.text()}`);
+  const j = await r.json();
+  cached = { token: j.access_token, until: Date.now() + (Math.max(60, (j.expires_in ?? 900) - 60)) * 1000 };
+  return cached.token;
+}
 
 async function validSignature(body: string, sig: string | null): Promise<boolean> {
   if (!sig || !SECRET) return false;
@@ -24,14 +46,14 @@ async function validSignature(body: string, sig: string | null): Promise<boolean
   return diff === 0;
 }
 
-const line = (path: string, body?: unknown, method = "POST") =>
+const line = async (path: string, body?: unknown, method = "POST") =>
   fetch(API + path, {
     method,
-    headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${await token()}`, "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-const reply = (replyToken: string, text: string) =>
-  line("/message/reply", { replyToken, messages: [{ type: "text", text }] });
+const send = (replyToken: string, messages: unknown[]) => line("/message/reply", { replyToken, messages });
+const reply = (replyToken: string, text: string) => send(replyToken, [{ type: "text", text }]);
 
 async function settings(): Promise<Record<string, string>> {
   const rows = await sql`select key, coalesce(value, '') value from crm.settings`;
@@ -74,8 +96,7 @@ const MSG = {
   register: "พิมพ์เบอร์โทรที่ใช้สะสมแต้ม 10 หลัก ส่งมาในแชตนี้ได้เลยค่ะ เช่น 0812345678",
   retry: "เบอร์โทรไม่ครบ 10 หลักค่ะ รบกวนพิมพ์ใหม่อีกครั้ง เช่น 0812345678",
   taken: "เบอร์นี้ลงทะเบียนกับ LINE บัญชีอื่นแล้วค่ะ รบกวนแจ้งพนักงานที่ร้านนะคะ",
-  already: (p: string) =>
-    `บัญชีนี้ลงทะเบียนไว้แล้วค่ะ เบอร์สมาชิก ${fmtPhone(p)} กดปุ่ม "บัตรสมาชิก" ด้านล่างแล้วแสดงให้แคชเชียร์ได้เลยค่ะ`,
+  already: "บัญชีนี้ลงทะเบียนไว้แล้วค่ะ แสดงบัตรนี้ให้แคชเชียร์ได้เลยค่ะ",
   otherNumber: (p: string) =>
     `บัญชีนี้ลงทะเบียนเบอร์ ${fmtPhone(p)} ไว้แล้วค่ะ หากต้องการเปลี่ยนเบอร์ รบกวนแจ้งพนักงานที่ร้านนะคะ`,
   confirm: (p: string, reward: string, from: string, to: string) =>
@@ -84,6 +105,60 @@ const MSG = {
     `ครั้งหน้ากดปุ่ม "บัตรสมาชิก" ด้านล่าง แล้วแสดงให้แคชเชียร์ได้เลยค่ะ`,
 };
 
+const RED = "#C8102E", GREY = "#8E8E93";
+const txt = (text: string, o: Record<string, unknown> = {}) => ({ type: "text", text, wrap: true, align: "center", ...o });
+
+// The member card: a free reply (Flex). Number large; coupons below; "ใช้สิทธิ์" only on a usable coupon.
+async function memberCard(userId: string) {
+  const s = await settings();
+  const [m] = await sql`select phone from crm.line_members where line_user_id = ${userId}`;
+  if (!m?.phone) return null;
+  const t = bkkDate();
+  const coupons = await sql`
+    select id, title, to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
+           to_char(redeemed_at at time zone 'Asia/Bangkok','HH24:MI') used_at,
+           case when redeemed_at is not null then 'used' when ${t}::date < valid_from then 'soon' else 'ready' end st
+    from crm.coupons
+    where line_user_id = ${userId}
+      and (redeemed_at is null and valid_to >= ${t}::date
+           or (redeemed_at at time zone 'Asia/Bangkok')::date = ${t}::date)
+    order by valid_from`;
+  const body: unknown[] = [
+    txt("เบอร์สมาชิก", { size: "sm", color: GREY }),
+    txt(fmtPhone(m.phone), { size: "3xl", weight: "bold" }),
+    txt("แสดงให้แคชเชียร์เพื่อสะสมแต้ม", { size: "sm" }),
+  ];
+  const buttons: unknown[] = [];
+  for (const c of coupons) {
+    const used = c.st === "used", soon = c.st === "soon";
+    body.push({
+      type: "box", layout: "vertical", margin: "lg", paddingAll: "12px", cornerRadius: "12px",
+      borderWidth: "2px", borderColor: used || soon ? "#E5E5EA" : RED,
+      contents: [
+        txt(c.title, { weight: "bold", size: "lg", color: used ? GREY : "#1D1D1F", decoration: used ? "line-through" : "none" }),
+        txt(used ? `ใช้สิทธิ์แล้ว ${c.used_at} น.`
+          : soon ? `ใช้ได้ในการมาครั้งถัดไป ${thDate(c.vf)} ถึง ${thDate(c.vt)}`
+          : `ใช้ได้ถึง ${thDate(c.vt)}`, { size: "sm", color: used ? "#1A7F3C" : GREY }),
+      ],
+    });
+    if (c.st === "ready") buttons.push({
+      type: "button", style: "primary", color: RED, height: "sm",
+      action: { type: "postback", label: "ใช้สิทธิ์ (สำหรับพนักงาน)", data: `action=redeem&id=${c.id}` },
+    });
+  }
+  return {
+    type: "flex", altText: `บัตรสมาชิก ${fmtPhone(m.phone)}`,
+    contents: {
+      type: "bubble",
+      header: { type: "box", layout: "vertical", backgroundColor: RED, paddingAll: "14px",
+        contents: [txt(s.brand_name || "Mama Pook", { color: "#FFFFFF", weight: "bold", size: "lg" }),
+                   txt("บัตรสมาชิก", { color: "#FFFFFF", size: "sm" })] },
+      body: { type: "box", layout: "vertical", spacing: "sm", contents: body },
+      ...(buttons.length ? { footer: { type: "box", layout: "vertical", spacing: "sm", contents: buttons } } : {}),
+    },
+  };
+}
+
 async function linkMemberMenu(userId: string, s: Record<string, string>) {
   if (s.richmenu_member) await line(`/user/${userId}/richmenu/${s.richmenu_member}`);
 }
@@ -91,7 +166,10 @@ async function linkMemberMenu(userId: string, s: Record<string, string>) {
 async function onPhone(userId: string, replyToken: string, phone: string) {
   const s = await settings();
   const [me] = await sql`select phone from crm.line_members where line_user_id = ${userId}`;
-  if (me?.phone === phone) { await linkMemberMenu(userId, s); return reply(replyToken, MSG.already(phone)); }
+  if (me?.phone === phone) {
+    await linkMemberMenu(userId, s);
+    return send(replyToken, [{ type: "text", text: MSG.already }, await memberCard(userId)]);
+  }
   if (me?.phone) return reply(replyToken, MSG.otherNumber(me.phone));
   const [owner] = await sql`select 1 from crm.line_members where phone = ${phone} and line_user_id <> ${userId}`;
   if (owner) return reply(replyToken, MSG.taken);
@@ -111,8 +189,36 @@ async function onPhone(userId: string, replyToken: string, phone: string) {
     if (String(e).includes("line_members_phone_uq")) return reply(replyToken, MSG.taken); // race: taken meanwhile
     throw e;
   }
-  await reply(replyToken, MSG.confirm(phone, reward, from, to));
+  await send(replyToken, [{ type: "text", text: MSG.confirm(phone, reward, from, to) }, await memberCard(userId)]);
   await linkMemberMenu(userId, s);
+}
+
+// Two-step redeem: the button asks for confirmation; only "ยืนยัน" marks the coupon used.
+async function onRedeem(userId: string, replyToken: string, id: number, confirmed: boolean) {
+  const [c] = await sql`
+    select title, to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
+           to_char(redeemed_at at time zone 'Asia/Bangkok','DD/MM HH24:MI') used_at,
+           ${bkkDate()}::date < valid_from too_early, ${bkkDate()}::date > valid_to expired
+    from crm.coupons where id = ${id} and line_user_id = ${userId}`;
+  if (!c) return;
+  if (c.used_at) return reply(replyToken, `คูปองนี้ใช้สิทธิ์ไปแล้วเมื่อ ${c.used_at} น. ค่ะ`);
+  if (c.too_early) return reply(replyToken, `คูปองนี้ใช้ได้ในการมาครั้งถัดไป ตั้งแต่ ${thDate(c.vf)} ค่ะ`);
+  if (c.expired) return reply(replyToken, `คูปองนี้หมดอายุแล้วเมื่อ ${thDate(c.vt)} ค่ะ`);
+  if (!confirmed) {
+    return send(replyToken, [{
+      type: "template", altText: "ยืนยันใช้สิทธิ์",
+      template: { type: "confirm", text: `พนักงาน: ยืนยันใช้สิทธิ์ "${c.title}" ?\nแล้วใส่คูปองในบิลที่ POS`,
+        actions: [{ type: "postback", label: "ยืนยัน", data: `action=redeem_ok&id=${id}` },
+                  { type: "postback", label: "ยกเลิก", data: "action=noop" }] },
+    }]);
+  }
+  const done = await sql`
+    update crm.coupons set redeemed_at = now()
+    where id = ${id} and line_user_id = ${userId} and redeemed_at is null
+      and ${bkkDate()}::date between valid_from and valid_to
+    returning to_char(redeemed_at at time zone 'Asia/Bangkok','HH24:MI') at`;
+  if (!done.length) return reply(replyToken, "ใช้สิทธิ์ไม่สำเร็จค่ะ กรุณาเปิดบัตรสมาชิกใหม่อีกครั้ง");
+  return reply(replyToken, `✅ ใช้สิทธิ์ "${c.title}" เรียบร้อย เวลา ${done[0].at} น.\nพนักงาน: ใส่คูปองในบิลที่ POS ค่ะ`);
 }
 
 async function handle(ev: any) {
@@ -126,11 +232,17 @@ async function handle(ev: any) {
     await sql`update crm.line_members set blocked_at = now(), updated_at = now() where line_user_id = ${userId}`;
     return;
   }
-  if (ev.type === "postback" && /(^|&)action=register(&|$)/.test(ev.postback?.data ?? "")) {
-    await ensureMember(userId);
-    const [me] = await sql`select phone from crm.line_members where line_user_id = ${userId}`;
-    if (me?.phone) { await linkMemberMenu(userId, await settings()); return reply(ev.replyToken, MSG.already(me.phone)); }
-    return reply(ev.replyToken, MSG.register);
+  if (ev.type === "postback") {
+    const q = new URLSearchParams(ev.postback?.data ?? "");
+    const action = q.get("action");
+    if (action === "register" || action === "card") {
+      await ensureMember(userId);
+      const card = await memberCard(userId);
+      if (card) { await linkMemberMenu(userId, await settings()); return send(ev.replyToken, action === "register" ? [{ type: "text", text: MSG.already }, card] : [card]); }
+      return reply(ev.replyToken, MSG.register);
+    }
+    if (action === "redeem" || action === "redeem_ok") return onRedeem(userId, ev.replyToken, Number(q.get("id")), action === "redeem_ok");
+    return;                                                            // noop / unknown
   }
   if (ev.type === "message" && ev.message?.type === "text") {
     const { digitLike, phone } = cleanNumber(ev.message.text ?? "");
