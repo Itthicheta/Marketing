@@ -9,6 +9,10 @@
 // v3 2026-11-17 — the rich menu is built by Point in the OA Manager (6 buttons). MEMBERS and COUPONS
 // are "Text" actions that send a fixed word; the webhook answers those words (KEYWORDS below).
 // COUPONS lists the running LINE built-in coupons from crm.line_coupon_list (members only).
+// NOTE: an OA Manager menu "Text" button does NOT deliver its text to the webhook; LINE sends a postback
+// "oaPlusRichMenu=true&richMenuId=default&actionId=<id>&version=<n>". The two ids are mapped in
+// crm.settings (menu_action_card, menu_action_coupons). Editing the menu in the OA Manager may change
+// the ids: unmapped ids are logged ("unmapped OA menu action") so they can be re-mapped.
 // Secrets (Edge Functions → Secrets): LINE_CHANNEL_ID, LINE_CHANNEL_SECRET. The script mints its own
 // short-lived stateless access token from those two (no Developers Console needed). An optional
 // LINE_CHANNEL_ACCESS_TOKEN, if ever set, is used instead.
@@ -284,6 +288,13 @@ async function handle(ev: any) {
   }
   if (ev.type === "postback") {
     const q = new URLSearchParams(ev.postback?.data ?? "");
+    if (q.get("oaPlusRichMenu") === "true") {                          // OA Manager menu button
+      const s = await settings(), id = q.get("actionId") ?? "";
+      if (id && id === s.menu_action_card) return onMenu(userId, ev.replyToken, "card");
+      if (id && id === s.menu_action_coupons) return onMenu(userId, ev.replyToken, "coupons");
+      console.log("unmapped OA menu action", id, q.get("version"));
+      return;
+    }
     const action = q.get("action");
     if (action === "register" || action === "card" || action === "coupons") return onMenu(userId, ev.replyToken, action);
     if (action === "redeem" || action === "redeem_ok") return onRedeem(userId, ev.replyToken, Number(q.get("id")), action === "redeem_ok");

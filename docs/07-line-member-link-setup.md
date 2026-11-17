@@ -16,6 +16,10 @@ MEMBERS and COUPONS use the OA Manager action type **Text**, sending `บัต�
 answers those words (also members/member/สมาชิก, coupons/coupon/คูปอง). Non-members get the register prompt.
 COUPONS lists rows of `crm.line_coupon_list` (migration 0010) whose dates include today: title, LINE coupon share URL,
 optional image, valid_from/valid_to. LINE enforces one use per person for its built-in coupons.
+**Gotcha (found in testing):** an OA Manager "Text" button does NOT send its text to the webhook. LINE sends a
+postback `oaPlusRichMenu=true&richMenuId=default&actionId=<id>&version=<n>`. The two ids live in `crm.settings`
+(`menu_action_card` = vjUpcXcCtD541roC, `menu_action_coupons` = FULFZq1xez8kuj8Q at menu version 13). Editing the
+menu in the OA Manager may change them; unmapped ids are logged as "unmapped OA menu action" in the function logs.
 `line-menu-setup` (script menus) is NOT used in v3; running it would override the OA Manager menu.
 Add a coupon to the list:
 ```sql
