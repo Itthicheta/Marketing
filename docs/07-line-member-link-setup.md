@@ -120,3 +120,14 @@ All functions are inert until the secrets below exist.
 - Plan: the CRM-tab send form should use this API instead of copied share links, and record recipients in our own table.
 - v2 (2026-11-18): body `{mode:"card", note?, to:[...]}` pushes each linked member their own member card, so our own coupons (crm.coupons, staff tap) can be announced by push. One push request counts as one message per person even with a note plus the card. The card builder is a copy of line-webhook's memberCard: change both together.
 
+## Points and rewards on the member card (decided 2026-11-18, Point)
+- ERS is the only points system: points are earned and deducted only in the POS. We never keep our own points count.
+- The card shows the ERS balance for the member's phone (ERS customer `acct`), refreshed about every 30 min from the latest bill's `balancepoint` (nightly customer master as fallback), with the update time printed.
+- The card lists rewards view-only: affordable ones highlighted "แลกได้ที่แคชเชียร์", the rest grey "อีก X แต้ม". No redeem button in LINE.
+- Redemption happens only at the cashier with the ERS points-redemption item; ERS checks the live balance, so the card's delay can't be used to redeem twice. Checked 2026-11-18: ERS keeps one balance across branches (14 of 15 cross-branch bills continue the balance).
+- Rewards list = ERS redeemable items (`pos_m_items.isredeempoint`, cost `pointtoredeem`); optional customer-facing name and picture kept on our side by item code. Today: one item, คอหมูย่าง for 20 points.
+- LINE members who aren't ERS members see "ยังไม่มีแต้ม แจ้งเบอร์นี้ที่แคชเชียร์เพื่อเริ่มสะสม"; staff create the ERS member with the same phone the first time the card is shown (we can't write into ERS).
+- Phones on two ERS records (8 found): show the record with the latest bill; give Point the list to merge in ERS.
+- Only the sign-up เก๊กฮวย uses the staff tap on the card. Promotional coupons go out as LINE coupons through the API.
+- Open: whether ERS points expire (not answered yet; card shows no expiry until decided).
+
