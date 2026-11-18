@@ -111,3 +111,11 @@ All functions are inert until the secrets below exist.
 | Existing member, not linked | ตอนนี้เราส่งคูปองฟรีและส่วนลดให้สมาชิกทาง LINE ค่ะ รบกวนแอด LINE แล้วส่งเบอร์เดิมเข้ามา ครั้งหน้ารับเก๊กฮวยฟรี 1 แก้วค่ะ |
 | Customer declines | ไม่เป็นไรค่ะ แต้มยังสะสมได้ตามปกติค่ะ |
 | Redeeming | ขอดูบัตรสมาชิกใน LINE ค่ะ → กด "ใช้สิทธิ์" → ใส่คูปองเก๊กฮวยในบิล POS |
+
+## LINE coupon API (tested 2026-11-18)
+- LINE's Messaging API can now create built-in coupons and send them as messages (docs: developers.line.biz/en/docs/messaging-api/send-coupons-to-users/). API coupons also appear in the OA Manager coupon list.
+- Function `line-coupon-send` (verify_jwt off, one-time key `crm.settings.send_key`, header `x-send-key`): body `{coupon:{title, description, start, end, maxUse, reward?, imageUrl?, usageCondition?}, to:[userIds ≤500]}`. Visibility is always UNLISTED, timezone ASIA_BANGKOK, reward defaults to `{type:"free"}`. It returns couponId, the coupon details and quota use before/after.
+- First test: coupon 01M7PCBVPR38CYTZSRHVZHNAH2 pushed to Point only. Quota went 3 → 4, so a coupon push costs one message per person (a reply would be free).
+- Limits: coupons can't be edited (close and recreate), up to 5,000 live coupons per channel, no API or webhook for who opened or used a coupon (OA Manager Insights shows totals only).
+- Plan: the CRM-tab send form should use this API instead of copied share links, and record recipients in our own table.
+

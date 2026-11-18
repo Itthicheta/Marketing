@@ -73,6 +73,10 @@ Phone-number link between LINE friends of @mamapook and POS members, with a next
 `member-card-page/` on Cloudflare (`mamapook-member.itthichet-a.workers.dev`). Inert until the
 owner enters the LINE secrets. Full decisions, addresses and the owner checklist:
 `docs/07-line-member-link-setup.md`. Design: LINE Member Link Playbook (sales site `#mk-crm`).
+LINE coupon API (tested 2026-11-18): Edge Function `line-coupon-send` creates a real LINE
+built-in coupon (POST /v2/bot/coupon) and pushes it as a `coupon` message to chosen user IDs,
+armed by a one-time key in `crm.settings.send_key`. One push to one person used 1 message of
+quota. LINE gives no per-person usage data for these coupons; totals are in OA Manager Insights.
 
 ## Change log (append-only)
 
@@ -112,3 +116,4 @@ owner enters the LINE secrets. Full decisions, addresses and the owner checklist
   operation-log repo; new Claude sessions on that repo are scoped by its CLAUDE.md. Design rule 7
   added: Marketing never touches operation_log.* and vice versa.
 - 2026-11-17 — LINE member link built and deployed (crm schema, 3 Edge Functions, card page); waiting on owner LINE steps A, 9, 11–13, 15. See docs/07.
+- 2026-11-18 — LINE coupon API test: `line-coupon-send` deployed; test coupon 01M7PCBVPR38CYTZSRHVZHNAH2 (free เก๊กฮวย, valid to 2026-11-19, one use) pushed to Point only; quota 3→4. Decision pending: build the CRM-tab send form on this API instead of share links.

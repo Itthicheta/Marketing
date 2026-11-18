@@ -1,0 +1,72 @@
+// line-coupon-send — create a LINE built-in coupon with the Messaging API coupon endpoints and
+// push it to chosen LINE user IDs (first test 2026-11-18, Point's own account only).
+// Records quota consumption before/after so we learn whether a coupon message costs quota.
+// ARMING: one-time key, cleared on use:
+//   update crm.settings set value = '<random>' where key = 'send_key';
+// then POST with header x-send-key: <random> and JSON body:
+//   { coupon: {title, description?, reward?, start, end, maxUse?}, to: ["U..."] }
+// start/end are ISO times (Asia/Bangkok). Max 500 recipients per call (one multicast).
+// Secrets: LINE_CHANNEL_ID + LINE_CHANNEL_SECRET (token minted here), or LINE_CHANNEL_ACCESS_TOKEN.
+// verify_jwt = false (the one-time key is the guard).
+import postgres from "npm:postgres@3.4.5";
+
+const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
+const FIXED_TOKEN = Deno.env.get("LINE_CHANNEL_ACCESS_TOKEN") ?? "";
+const CHANNEL_ID = Deno.env.get("LINE_CHANNEL_ID") ?? "";
+const CHANNEL_SECRET = Deno.env.get("LINE_CHANNEL_SECRET") ?? "";
+
+async function token(): Promise<string> {
+  if (FIXED_TOKEN) return FIXED_TOKEN;
+  const r = await fetch("https://api.line.me/oauth2/v3/token", {
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "client_credentials", client_id: CHANNEL_ID, client_secret: CHANNEL_SECRET }),
+  });
+  if (!r.ok) throw new Error(`token ${r.status} ${await r.text()}`);
+  return (await r.json()).access_token;
+}
+
+async function line(tok: string, path: string, body?: unknown, method = body === undefined ? "GET" : "POST") {
+  const r = await fetch("https://api.line.me/v2/bot" + path, {
+    method, headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`${method} ${path} -> ${r.status} ${text}`);
+  return text ? JSON.parse(text) : {};
+}
+
+Deno.serve(async (req) => {
+  if (req.method !== "POST") return new Response("POST only", { status: 405 });
+  const key = req.headers.get("x-send-key") ?? "";
+  const armed = await sql`update crm.settings set value = null, updated_at = now()
+                          where key = 'send_key' and value is not null and value = ${key} returning 1`;
+  if (!key || armed.length !== 1) return new Response("not armed", { status: 403 });
+  try {
+    const { coupon: c, to } = await req.json();
+    if (!Array.isArray(to) || to.length < 1 || to.length > 500) throw new Error("to: 1-500 user IDs");
+    const tok = await token();
+    const quotaBefore = await line(tok, "/message/quota/consumption");
+    const body = {
+      title: c.title,
+      description: c.description,
+      acquisitionCondition: { type: "normal" },
+      maxUseCountPerTicket: c.maxUse ?? 1,
+      startTimestamp: Math.floor(new Date(c.start).getTime() / 1000),
+      endTimestamp: Math.floor(new Date(c.end).getTime() / 1000),
+      timezone: "ASIA_BANGKOK",
+      reward: c.reward ?? { type: "free" },
+      visibility: "UNLISTED",
+      ...(c.imageUrl ? { imageUrl: c.imageUrl } : {}),
+      ...(c.usageCondition ? { usageCondition: c.usageCondition } : {}),
+    };
+    const { couponId } = await line(tok, "/coupon", body);
+    const msg = [{ type: "coupon", couponId }];
+    if (to.length === 1) await line(tok, "/message/push", { to: to[0], messages: msg });
+    else await line(tok, "/message/multicast", { to, messages: msg });
+    const detail = await line(tok, `/coupon/${couponId}`);
+    const quotaAfter = await line(tok, "/message/quota/consumption");
+    return Response.json({ ok: true, couponId, sent: to.length, quotaBefore, quotaAfter, detail });
+  } catch (e) {
+    return Response.json({ ok: false, error: String(e) }, { status: 500 });
+  }
+});
