@@ -5,8 +5,7 @@
 //   update crm.settings set value = '<random>' where key = 'send_key';
 // then POST with header x-send-key: <random> and JSON body:
 //   { coupon: {title, description?, reward?, start, end, maxUse?}, to: ["U..."] }
-//   or { mode: "card", note?: "text", to: ["U..."] } to push each person their member card
-//   (our own crm.coupons, redeemed by the staff tap).
+// (Member-card pushes moved to line-webhook's admin door on 2026-11-18, so the card exists once.)
 // start/end are ISO times (Asia/Bangkok). Max 500 recipients per call (one multicast).
 // Secrets: LINE_CHANNEL_ID + LINE_CHANNEL_SECRET (token minted here), or LINE_CHANNEL_ACCESS_TOKEN.
 // verify_jwt = false (the one-time key is the guard).
@@ -38,62 +37,6 @@ async function line(tok: string, path: string, body?: unknown, method = body ===
 }
 
 
-// ---- member card: COPY of memberCard() in line-webhook (keep in sync) ----
-const RED = "#C8102E", GREY = "#8E8E93";
-const txt = (text: string, o: Record<string, unknown> = {}) => ({ type: "text", text, wrap: true, align: "center", ...o });
-const fmtPhone = (p: string) => `${p.slice(0, 3)}-${p.slice(3, 6)}-${p.slice(6)}`;
-const bkkDate = () => new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
-const thDate = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
-async function memberCard(userId: string) {
-  const [b] = await sql`select coalesce(value, '') v from crm.settings where key = 'brand_name'`;
-  const [m] = await sql`select phone from crm.line_members where line_user_id = ${userId}`;
-  if (!m?.phone) return null;
-  const t = bkkDate();
-  const coupons = await sql`
-    select id, title, to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
-           to_char(redeemed_at at time zone 'Asia/Bangkok','HH24:MI') used_at,
-           case when redeemed_at is not null then 'used' when ${t}::date < valid_from then 'soon' else 'ready' end st
-    from crm.coupons
-    where line_user_id = ${userId}
-      and (redeemed_at is null and valid_to >= ${t}::date
-           or (redeemed_at at time zone 'Asia/Bangkok')::date = ${t}::date)
-    order by valid_from`;
-  const body: unknown[] = [
-    txt("เบอร์สมาชิก", { size: "sm", color: GREY }),
-    txt(fmtPhone(m.phone), { size: "3xl", weight: "bold" }),
-    txt("แสดงให้แคชเชียร์เพื่อสะสมแต้ม", { size: "sm" }),
-  ];
-  const buttons: unknown[] = [];
-  for (const c of coupons) {
-    const used = c.st === "used", soon = c.st === "soon";
-    body.push({
-      type: "box", layout: "vertical", margin: "lg", paddingAll: "12px", cornerRadius: "12px",
-      borderWidth: "2px", borderColor: used || soon ? "#E5E5EA" : RED,
-      contents: [
-        txt(c.title, { weight: "bold", size: "lg", color: used ? GREY : "#1D1D1F", decoration: used ? "line-through" : "none" }),
-        txt(used ? `ใช้สิทธิ์แล้ว ${c.used_at} น.`
-          : soon ? `ใช้ได้ในการมาครั้งถัดไป ${thDate(c.vf)} ถึง ${thDate(c.vt)}`
-          : `ใช้ได้ถึง ${thDate(c.vt)}`, { size: "sm", color: used ? "#1A7F3C" : GREY }),
-      ],
-    });
-    if (c.st === "ready") buttons.push({
-      type: "button", style: "primary", color: RED, height: "sm",
-      action: { type: "postback", label: "ใช้สิทธิ์ (สำหรับพนักงาน)", data: `action=redeem&id=${c.id}` },
-    });
-  }
-  return {
-    type: "flex", altText: `บัตรสมาชิก ${fmtPhone(m.phone)}`,
-    contents: {
-      type: "bubble",
-      header: { type: "box", layout: "vertical", backgroundColor: RED, paddingAll: "14px",
-        contents: [txt(b?.v || "Mama Pook", { color: "#FFFFFF", weight: "bold", size: "lg" }),
-                   txt("บัตรสมาชิก", { color: "#FFFFFF", size: "sm" })] },
-      body: { type: "box", layout: "vertical", spacing: "sm", contents: body },
-      ...(buttons.length ? { footer: { type: "box", layout: "vertical", spacing: "sm", contents: buttons } } : {}),
-    },
-  };
-}
-
 Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("POST only", { status: 405 });
   const key = req.headers.get("x-send-key") ?? "";
@@ -101,22 +44,9 @@ Deno.serve(async (req) => {
                           where key = 'send_key' and value is not null and value = ${key} returning 1`;
   if (!key || armed.length !== 1) return new Response("not armed", { status: 403 });
   try {
-    const { coupon: c, to, mode, note } = await req.json();
+    const { coupon: c, to } = await req.json();
     if (!Array.isArray(to) || to.length < 1 || to.length > 500) throw new Error("to: 1-500 user IDs");
     const tok = await token();
-    if (mode === "card") {            // push each person their own member card (our-system coupons)
-      const before = await line(tok, "/message/quota/consumption");
-      const out = [];
-      for (const u of to) {
-        const card = await memberCard(u);
-        if (!card) { out.push({ to: u, ok: false, error: "not a linked member" }); continue; }
-        const msgs = note ? [{ type: "text", text: note }, card] : [card];
-        await line(tok, "/message/push", { to: u, messages: msgs });
-        out.push({ to: u, ok: true });
-      }
-      const after = await line(tok, "/message/quota/consumption");
-      return Response.json({ ok: true, mode, out, quotaBefore: before, quotaAfter: after });
-    }
     const quotaBefore = await line(tok, "/message/quota/consumption");
     const body = {
       title: c.title,

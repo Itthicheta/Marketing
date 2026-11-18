@@ -1,0 +1,47 @@
+// crm-points-sync — receives ERS points balances, reward items and branches from the Mac pipeline
+// (tools/crm_points_push.py, every ~30 min after the POS load) and replaces crm.pos_points,
+// crm.pos_rewards and crm.branches (Point 2026-11-18: ERS is the only points system).
+// Guard: header x-sync-key must equal crm.settings.points_sync_key (kept in the Mac .env as
+// MARKETING_POINTS_KEY). verify_jwt = false. Refuses an empty member list so a bad query can't wipe it.
+import postgres from "npm:postgres@3.4.5";
+
+const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
+
+Deno.serve(async (req) => {
+  if (req.method !== "POST") return new Response("POST only", { status: 405 });
+  const key = req.headers.get("x-sync-key") ?? "";
+  const [s] = await sql`select value from crm.settings where key = 'points_sync_key'`;
+  if (!key || !s?.value || key !== s.value) return new Response("forbidden", { status: 403 });
+  try {
+    const { members, rewards, branches } = await req.json();
+    if (!Array.isArray(members) || members.length < 50) throw new Error(`members: got ${members?.length ?? 0}, refusing to replace`);
+    const ok = (p: string) => /^0[689]\d{8}$/.test(p);
+    const m = members.filter((r: any) => ok(String(r.phone)));
+    await sql.begin(async (tx) => {
+      await tx`delete from crm.pos_points`;
+      for (let i = 0; i < m.length; i += 500) {
+        const chunk = m.slice(i, i + 500).map((r: any) => ({
+          phone: String(r.phone), points: Number(r.points) || 0, as_of: r.as_of,
+          last_bill_at: r.last_bill_at ?? null, last_branch_id: r.last_branch_id ?? null,
+        }));
+        await tx`insert into crm.pos_points ${tx(chunk, "phone", "points", "as_of", "last_bill_at", "last_branch_id")}`;
+      }
+      if (Array.isArray(rewards)) {
+        await tx`delete from crm.pos_rewards`;
+        const rw = rewards.map((r: any) => ({ item_code: String(r.item_code), ers_name: String(r.ers_name), points: Number(r.points) }));
+        if (rw.length) await tx`insert into crm.pos_rewards ${tx(rw, "item_code", "ers_name", "points")}`;
+      }
+      if (Array.isArray(branches) && branches.length) {
+        for (const b of branches) {
+          await tx`insert into crm.branches (branch_id, name, sort) values (${b.branch_id}, ${b.name}, ${b.sort ?? 100})
+                   on conflict (branch_id) do update set name = excluded.name, sort = excluded.sort, active = true`;
+        }
+        await tx`update crm.branches set active = false where not (branch_id = any(${branches.map((b: any) => b.branch_id)}::int[]))`;
+      }
+    });
+    return Response.json({ ok: true, members: m.length, skipped: members.length - m.length, rewards: rewards?.length ?? 0, branches: branches?.length ?? 0 });
+  } catch (e) {
+    console.error("crm-points-sync", e);
+    return Response.json({ ok: false, error: String(e) }, { status: 500 });
+  }
+});

@@ -1,23 +1,19 @@
-// line-webhook — LINE Member Link Playbook, "What the webhook script does" (Point 2026-11-17).
-// LINE calls this for every event on @mamapook. It (1) proves the call came from LINE,
-// (2) logs every event to raw.line_events (LINE never re-sends a text), (3) saves the
-// LINE user + phone, issues the next-visit เก๊กฮวย coupon, replies, and switches the
-// customer's rich menu. Ordinary chat gets NO reply so staff can answer by hand.
-// v2 2026-11-17 — card-message version: @mamapook's Messaging API channel sits under a provider
-// Point's console login can't reach, so there is no LINE Login/LIFF channel. The member card is a
-// free reply (Flex message) with the number, the coupon and a two-step "ใช้สิทธิ์" button.
-// v3 2026-11-17 — the rich menu is built by Point in the OA Manager (6 buttons). MEMBERS and COUPONS
-// are "Text" actions that send a fixed word; the webhook answers those words (KEYWORDS below).
-// COUPONS lists the running LINE built-in coupons from crm.line_coupon_list sent to that member
-// (audience 'all' or a target group in crm.line_coupon_targets); members only.
-// NOTE: an OA Manager menu "Text" button does NOT deliver its text to the webhook; LINE sends a postback
-// "oaPlusRichMenu=true&richMenuId=default&actionId=<id>&version=<n>". The two ids are mapped in
-// crm.settings (menu_action_card, menu_action_coupons). Editing the menu in the OA Manager may change
-// the ids: unmapped ids are logged ("unmapped OA menu action") so they can be re-mapped.
-// Secrets (Edge Functions → Secrets): LINE_CHANNEL_ID, LINE_CHANNEL_SECRET. The script mints its own
-// short-lived stateless access token from those two (no Developers Console needed). An optional
-// LINE_CHANNEL_ACCESS_TOKEN, if ever set, is used instead.
-// Deploy with verify_jwt = false (LINE cannot send a Supabase JWT; the signature is the guard).
+// line-webhook — LINE member program for @mamapook (Point 2026-11-17, v4 2026-11-18).
+// One function, three doors:
+//  1. LINE events (X-Line-Signature): logs every event to raw.line_events, sends the sign-up button on
+//     follow, answers the MEMBERS and PROMOTIONS menu buttons, runs the two-step staff redeem.
+//  2. /signup (the sign-up form page): GET ?t=<one-time token> -> form data; POST -> link the phone,
+//     save name/birthday/branch/consent, issue the next-visit เก๊กฮวย, push the confirmation + card.
+//  3. Admin push (header x-send-key = the one-time crm.settings.send_key, cleared on use):
+//     {to, mode: card|promotions|signup, note?, include_inactive?} -> push to one LINE user.
+// Decisions (docs/07): ERS is the only points system; the card shows the ERS balance (crm.pos_points,
+// ~30 min, from the Mac pipeline) and a view-only reward ladder (crm.pos_rewards); redemption only at the
+// cashier in ERS; points expire after 3 months; only the sign-up เก๊กฮวย uses the staff tap. PROMOTIONS =
+// crm.promotions, open to everyone. Promotional coupons go out as LINE coupons (line-coupon-send).
+// OA Manager menu buttons arrive as postbacks "oaPlusRichMenu=true&actionId=<id>"; ids are mapped in
+// crm.settings (menu_action_card, menu_action_promotions); unmapped ids are logged for re-mapping.
+// Secrets: LINE_CHANNEL_ID, LINE_CHANNEL_SECRET (stateless token minted here) or LINE_CHANNEL_ACCESS_TOKEN.
+// Deploy with verify_jwt = false (signature / one-time token / one-time key are the guards).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -26,7 +22,6 @@ const CHANNEL_ID = Deno.env.get("LINE_CHANNEL_ID") ?? "";
 const FIXED_TOKEN = Deno.env.get("LINE_CHANNEL_ACCESS_TOKEN") ?? "";
 const API = "https://api.line.me/v2/bot";
 
-// Stateless channel access token (valid 15 min): issued from channel id + secret, cached per instance.
 let cached = { token: "", until: 0 };
 async function token(): Promise<string> {
   if (FIXED_TOKEN) return FIXED_TOKEN;
@@ -62,6 +57,10 @@ const line = async (path: string, body?: unknown, method = "POST") =>
   });
 const send = (replyToken: string, messages: unknown[]) => line("/message/reply", { replyToken, messages });
 const reply = (replyToken: string, text: string) => send(replyToken, [{ type: "text", text }]);
+const push = async (to: string, messages: unknown[]) => {
+  const r = await line("/message/push", { to, messages });
+  if (!r.ok) throw new Error(`push ${r.status} ${await r.text()}`);
+};
 
 async function settings(): Promise<Record<string, string>> {
   const rows = await sql`select key, coalesce(value, '') value from crm.settings`;
@@ -75,7 +74,6 @@ async function displayName(userId: string): Promise<string | null> {
   } catch { return null; }
 }
 
-// Upsert the friend row (also covers people who were friends before the webhook existed).
 async function ensureMember(userId: string) {
   const name = await displayName(userId);
   await sql`insert into crm.line_members (line_user_id, display_name)
@@ -94,70 +92,107 @@ function cleanNumber(text: string): { digitLike: boolean; phone: string | null }
   return { digitLike: true, phone: /^0[689]\d{8}$/.test(t) ? t : null };
 }
 const fmtPhone = (p: string) => `${p.slice(0, 3)}-${p.slice(3, 6)}-${p.slice(6)}`;
-const bkkDate = (offsetDays = 0) => {
-  const d = new Date(Date.now() + 7 * 3600e3 + offsetDays * 86400e3);
-  return d.toISOString().slice(0, 10);
-};
+const bkkDate = (offsetDays = 0) => new Date(Date.now() + 7 * 3600e3 + offsetDays * 86400e3).toISOString().slice(0, 10);
 const thDate = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+const fmtNum = (n: number) => Math.floor(n).toLocaleString("en-US");
 
 const MSG = {
-  register: "พิมพ์เบอร์โทรที่ใช้สะสมแต้ม 10 หลัก ส่งมาในแชตนี้ได้เลยค่ะ เช่น 0812345678",
-  retry: "เบอร์โทรไม่ครบ 10 หลักค่ะ รบกวนพิมพ์ใหม่อีกครั้ง เช่น 0812345678",
   taken: "เบอร์นี้ลงทะเบียนกับ LINE บัญชีอื่นแล้วค่ะ รบกวนแจ้งพนักงานที่ร้านนะคะ",
   already: "บัญชีนี้ลงทะเบียนไว้แล้วค่ะ แสดงบัตรนี้ให้แคชเชียร์ได้เลยค่ะ",
   otherNumber: (p: string) =>
     `บัญชีนี้ลงทะเบียนเบอร์ ${fmtPhone(p)} ไว้แล้วค่ะ หากต้องการเปลี่ยนเบอร์ รบกวนแจ้งพนักงานที่ร้านนะคะ`,
   confirm: (p: string, reward: string, from: string, to: string) =>
-    `ลงทะเบียนเรียบร้อยค่ะ เบอร์สมาชิก ${fmtPhone(p)}\n` +
+    `สมัครสมาชิกเรียบร้อยค่ะ เบอร์สมาชิก ${fmtPhone(p)}\n` +
     `รับ${reward} ในการมาครั้งถัดไป ใช้ได้ ${thDate(from)} ถึง ${thDate(to)}\n` +
     `ครั้งหน้ากดปุ่ม "MEMBERS" ที่เมนูด้านล่าง แล้วแสดงบัตรให้แคชเชียร์ได้เลยค่ะ`,
+  updated: "บันทึกข้อมูลเรียบร้อยค่ะ ขอบคุณค่ะ",
+  noPromo: "ยังไม่มีโปรโมชั่นตอนนี้ค่ะ ติดตามได้เร็วๆ นี้นะคะ",
 };
 
-// Words sent by the OA Manager menu's "Text" buttons (and anything a customer types that matches).
-const KEYWORDS: Record<string, "card" | "coupons"> = {
+// Words a customer may type (the OA Manager menu buttons arrive as postbacks, see handle()).
+const KEYWORDS: Record<string, "card" | "promotions"> = {
   "บัตรสมาชิก": "card", "สมาชิก": "card", "members": "card", "member": "card",
-  "คูปองของฉัน": "coupons", "คูปอง": "coupons", "coupons": "coupons", "coupon": "coupons",
+  "โปรโมชั่น": "promotions", "โปรโมชัน": "promotions", "โปร": "promotions", "promotions": "promotions",
+  "promotion": "promotions", "คูปอง": "promotions", "คูปองของฉัน": "promotions", "coupons": "promotions", "coupon": "promotions",
 };
 
-const RED = "#C8102E", GREY = "#8E8E93";
+const RED = "#C8102E", GREY = "#8E8E93", INK = "#1D1D1F", LINE_GREY = "#E5E5EA", GREEN = "#1A7F3C";
 const txt = (text: string, o: Record<string, unknown> = {}) => ({ type: "text", text, wrap: true, align: "center", ...o });
 
-// The member card: a free reply (Flex). Number large; coupons below; "ใช้สิทธิ์" only on a usable coupon.
+// ---------- member card ----------
 async function memberCard(userId: string) {
   const s = await settings();
   const [m] = await sql`select phone from crm.line_members where line_user_id = ${userId}`;
   if (!m?.phone) return null;
   const t = bkkDate();
+  const [pts] = await sql`select points, to_char(synced_at at time zone 'Asia/Bangkok','YYYY-MM-DD') sd,
+                                 to_char(synced_at at time zone 'Asia/Bangkok','HH24:MI') st
+                          from crm.pos_points where phone = ${m.phone}`;
+  const rewards = await sql`
+    select coalesce(d.display_name, r.ers_name) name, r.points
+    from crm.pos_rewards r left join crm.reward_display d using (item_code)
+    where not coalesce(d.hidden, false) order by r.points, name`;
   const coupons = await sql`
-    select id, title, to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
+    select id, kind, title, to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
            to_char(redeemed_at at time zone 'Asia/Bangkok','HH24:MI') used_at,
            case when redeemed_at is not null then 'used' when ${t}::date < valid_from then 'soon' else 'ready' end st
     from crm.coupons
     where line_user_id = ${userId}
       and (redeemed_at is null and valid_to >= ${t}::date
            or (redeemed_at at time zone 'Asia/Bangkok')::date = ${t}::date)
-    order by valid_from`;
+    order by valid_from, id`;
+
   const body: unknown[] = [
     txt("เบอร์สมาชิก", { size: "sm", color: GREY }),
     txt(fmtPhone(m.phone), { size: "3xl", weight: "bold" }),
-    txt("แสดงให้แคชเชียร์เพื่อสะสมแต้ม", { size: "sm" }),
+    { type: "separator", margin: "lg" },
   ];
-  const buttons: unknown[] = [];
+  const balance = pts ? Number(pts.points) : null;
+  if (pts) {
+    const when = pts.sd === t ? `อัปเดต ${pts.st}` : `อัปเดต ${thDate(pts.sd)} ${pts.st}`;
+    body.push(
+      txt("แต้มสะสม", { size: "sm", color: GREY, margin: "lg" }),
+      txt(`${fmtNum(balance!)} แต้ม`, { size: "xxl", weight: "bold", color: RED }),
+      txt(`${when} · ${s.points_expiry_note || "แต้มมีอายุ 3 เดือน"}`, { size: "xs", color: GREY }),
+    );
+  } else {
+    body.push(
+      txt("ยังไม่มีแต้ม", { size: "md", weight: "bold", margin: "lg" }),
+      txt("แจ้งเบอร์นี้ที่แคชเชียร์เพื่อเริ่มสะสม", { size: "sm", color: GREY }),
+    );
+  }
+  if (rewards.length) {
+    body.push(txt("ของรางวัล · แลกที่แคชเชียร์", { size: "sm", color: GREY, margin: "lg" }));
+    for (const r of rewards) {
+      const cost = Number(r.points), ok = balance !== null && balance >= cost;
+      body.push({
+        type: "box", layout: "vertical", margin: "sm", paddingAll: "10px", cornerRadius: "10px",
+        borderWidth: "1px", borderColor: ok ? RED : LINE_GREY, backgroundColor: ok ? "#FFF5F6" : "#F7F7F8",
+        contents: [
+          txt(r.name, { size: "sm", weight: "bold", color: ok ? INK : GREY }),
+          txt(ok ? `${fmtNum(cost)} แต้ม · แลกได้ที่แคชเชียร์`
+                 : `${fmtNum(cost)} แต้ม · อีก ${fmtNum(cost - (balance ?? 0))} แต้ม`,
+              { size: "xs", color: ok ? GREEN : GREY }),
+        ],
+      });
+    }
+  }
   for (const c of coupons) {
     const used = c.st === "used", soon = c.st === "soon";
+    const contents: unknown[] = [
+      txt(c.title, { weight: "bold", size: "lg", color: used ? GREY : INK, decoration: used ? "line-through" : "none" }),
+      txt(used ? `ใช้สิทธิ์แล้ว ${c.used_at} น.`
+        : soon ? (c.kind === "signup" ? `ใช้ได้ในการมาครั้งถัดไป ${thDate(c.vf)} ถึง ${thDate(c.vt)}`
+                                      : `เริ่มใช้ได้ ${thDate(c.vf)} ถึง ${thDate(c.vt)}`)
+        : `ใช้ได้ถึง ${thDate(c.vt)}`, { size: "sm", color: used ? GREEN : GREY }),
+    ];
+    if (c.st === "ready") contents.push({
+      type: "button", style: "primary", color: RED, height: "sm", margin: "md",
+      action: { type: "postback", label: "ใช้สิทธิ์ (สำหรับพนักงาน)", data: `action=redeem&id=${c.id}` },
+    });
     body.push({
       type: "box", layout: "vertical", margin: "lg", paddingAll: "12px", cornerRadius: "12px",
-      borderWidth: "2px", borderColor: used || soon ? "#E5E5EA" : RED,
-      contents: [
-        txt(c.title, { weight: "bold", size: "lg", color: used ? GREY : "#1D1D1F", decoration: used ? "line-through" : "none" }),
-        txt(used ? `ใช้สิทธิ์แล้ว ${c.used_at} น.`
-          : soon ? `ใช้ได้ในการมาครั้งถัดไป ${thDate(c.vf)} ถึง ${thDate(c.vt)}`
-          : `ใช้ได้ถึง ${thDate(c.vt)}`, { size: "sm", color: used ? "#1A7F3C" : GREY }),
-      ],
-    });
-    if (c.st === "ready") buttons.push({
-      type: "button", style: "primary", color: RED, height: "sm",
-      action: { type: "postback", label: "ใช้สิทธิ์ (สำหรับพนักงาน)", data: `action=redeem&id=${c.id}` },
+      borderWidth: "2px", borderColor: used || soon ? LINE_GREY : RED, contents,
     });
   }
   return {
@@ -168,86 +203,66 @@ async function memberCard(userId: string) {
         contents: [txt(s.brand_name || "Mama Pook", { color: "#FFFFFF", weight: "bold", size: "lg" }),
                    txt("บัตรสมาชิก", { color: "#FFFFFF", size: "sm" })] },
       body: { type: "box", layout: "vertical", spacing: "sm", contents: body },
-      ...(buttons.length ? { footer: { type: "box", layout: "vertical", spacing: "sm", contents: buttons } } : {}),
     },
   };
 }
 
-async function linkMemberMenu(userId: string, s: Record<string, string>) {
-  if (s.richmenu_member) await line(`/user/${userId}/richmenu/${s.richmenu_member}`);
-}
-
-async function onPhone(userId: string, replyToken: string, phone: string) {
-  const s = await settings();
-  const [me] = await sql`select phone from crm.line_members where line_user_id = ${userId}`;
-  if (me?.phone === phone) {
-    await linkMemberMenu(userId, s);
-    return send(replyToken, [{ type: "text", text: MSG.already }, await memberCard(userId)]);
-  }
-  if (me?.phone) return reply(replyToken, MSG.otherNumber(me.phone));
-  const [owner] = await sql`select 1 from crm.line_members where phone = ${phone} and line_user_id <> ${userId}`;
-  if (owner) return reply(replyToken, MSG.taken);
-
-  const days = Math.max(1, parseInt(s.reward_days || "14", 10));
-  const from = bkkDate(1), to = bkkDate(days);
-  const reward = s.reward_text || "เก๊กฮวยฟรี 1 แก้ว";
-  try {
-    await sql.begin(async (tx) => {
-      await tx`update crm.line_members set phone = ${phone}, linked_at = now(), updated_at = now()
-               where line_user_id = ${userId}`;
-      await tx`insert into crm.coupons (line_user_id, kind, title, valid_from, valid_to)
-               values (${userId}, 'signup', ${reward}, ${from}, ${to})
-               on conflict (line_user_id, kind) do nothing`;
-    });
-  } catch (e) {
-    if (String(e).includes("line_members_phone_uq")) return reply(replyToken, MSG.taken); // race: taken meanwhile
-    throw e;
-  }
-  await send(replyToken, [{ type: "text", text: MSG.confirm(phone, reward, from, to) }, await memberCard(userId)]);
-  await linkMemberMenu(userId, s);
-}
-
-// COUPONS button: the LINE built-in coupons sent to THIS member (audience 'all', or listed in
-// crm.line_coupon_targets) and running today; one box each with an open button (max 10).
-async function couponList(userId: string) {
+// ---------- PROMOTIONS ----------
+async function promotions(userId: string | null, includeInactive = false) {
   const t = bkkDate();
+  const [m] = userId ? await sql`select branch_id from crm.line_members where line_user_id = ${userId}` : [null];
   const rows = await sql`
-    select l.title, l.url, l.image_url, to_char(l.valid_to,'YYYY-MM-DD') vt from crm.line_coupon_list l
-    where l.active and ${t}::date between l.valid_from and l.valid_to
-      and (l.audience = 'all'
-           or exists (select 1 from crm.line_coupon_targets x where x.coupon_id = l.id and x.line_user_id = ${userId}))
-    order by l.sort, l.valid_to limit 10`;
+    select p.title, p.body, p.image_url, to_char(p.valid_to,'YYYY-MM-DD') vt, b.name branch
+    from crm.promotions p left join crm.branches b on b.branch_id = p.branch_id
+    where (p.active or ${includeInactive}) and ${t}::date between p.valid_from and p.valid_to
+      and (p.branch_id is null or p.branch_id = ${m?.branch_id ?? -1} or ${includeInactive})
+    order by p.sort, p.valid_to limit 12`;
   if (!rows.length) return null;
   return {
-    type: "flex", altText: "คูปองของฉัน",
+    type: "flex", altText: "โปรโมชั่น Mama Pook",
     contents: { type: "carousel", contents: rows.map((r) => ({
       type: "bubble", size: "kilo",
       ...(r.image_url ? { hero: { type: "image", url: r.image_url, size: "full", aspectMode: "cover", aspectRatio: "20:13" } } : {}),
       body: { type: "box", layout: "vertical", spacing: "sm", contents: [
-        txt(r.title, { weight: "bold", size: "md" }),
-        txt(`ใช้ได้ถึง ${thDate(r.vt)}`, { size: "xs", color: GREY }),
+        txt(r.title, { weight: "bold", size: "md", align: "start" }),
+        ...(r.body ? [txt(r.body, { size: "sm", align: "start" })] : []),
+        txt(`ถึง ${thDate(r.vt)}${r.branch ? ` · สาขา ${r.branch}` : ""}`, { size: "xs", color: GREY, align: "start" }),
       ] },
-      footer: { type: "box", layout: "vertical", contents: [{
-        type: "button", style: "primary", color: RED, height: "sm",
-        action: { type: "uri", label: "เปิดคูปอง", uri: r.url },
-      }] },
     })) },
   };
 }
 
-// MEMBERS / COUPONS taps (menu text words or postbacks). Non-members get the register prompt.
-async function onMenu(userId: string, replyToken: string, what: "card" | "coupons" | "register") {
+// ---------- sign-up button (one-time link to the form) ----------
+async function signupMessage(userId: string, s: Record<string, string>) {
+  const tok = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "").slice(0, 8);
+  await sql`insert into crm.signup_tokens (token, line_user_id) values (${tok}, ${userId})`;
+  const url = `${s.signup_form_url}?t=${tok}`;
+  return {
+    type: "flex", altText: "สมัครสมาชิก Mama Pook",
+    contents: { type: "bubble",
+      body: { type: "box", layout: "vertical", spacing: "sm", contents: [
+        txt("สมัครสมาชิก Mama Pook", { weight: "bold", size: "lg" }),
+        txt(`รับฟรี ${s.reward_text || "เก๊กฮวย 1 แก้ว"} ในการมาครั้งถัดไป`, { size: "sm" }),
+        txt("สะสมแต้ม 100 บาท = 1 แต้ม เพื่อแลกของฟรี", { size: "sm", color: GREY }),
+      ] },
+      footer: { type: "box", layout: "vertical", contents: [{
+        type: "button", style: "primary", color: RED, height: "sm",
+        action: { type: "uri", label: "สมัครสมาชิก", uri: url },
+      }] },
+    },
+  };
+}
+
+// MEMBERS / PROMOTIONS taps (postbacks or typed words). Non-members get the sign-up button for MEMBERS.
+async function onMenu(userId: string, replyToken: string, what: "card" | "promotions" | "register") {
   await ensureMember(userId);
+  const s = await settings();
+  if (what === "promotions") {
+    const p = await promotions(userId);
+    return p ? send(replyToken, [p]) : reply(replyToken, MSG.noPromo);
+  }
   const card = await memberCard(userId);
-  if (!card) {
-    return reply(replyToken, what === "coupons" ? "สมัครสมาชิกก่อนเพื่อรับคูปองค่ะ\n" + MSG.register : MSG.register);
-  }
-  await linkMemberMenu(userId, await settings());
-  if (what === "coupons") {
-    const list = await couponList(userId);
-    const note = { type: "text", text: "แตะ \"เปิดคูปอง\" แล้วกด \"ใช้คูปอง\" ต่อหน้าพนักงานค่ะ\nคูปองเก๊กฮวยสมาชิกอยู่ที่ปุ่ม \"MEMBERS\" ค่ะ" };
-    return list ? send(replyToken, [note, list]) : reply(replyToken, "ยังไม่มีคูปองใหม่ค่ะ ติดตามได้เร็วๆ นี้\nคูปองเก๊กฮวยสมาชิกอยู่ที่ปุ่ม \"MEMBERS\" ค่ะ");
-  }
+  if (!card) return send(replyToken, [await signupMessage(userId, s)]);
   return send(replyToken, what === "register" ? [{ type: "text", text: MSG.already }, card] : [card]);
 }
 
@@ -260,7 +275,7 @@ async function onRedeem(userId: string, replyToken: string, id: number, confirme
     from crm.coupons where id = ${id} and line_user_id = ${userId}`;
   if (!c) return;
   if (c.used_at) return reply(replyToken, `คูปองนี้ใช้สิทธิ์ไปแล้วเมื่อ ${c.used_at} น. ค่ะ`);
-  if (c.too_early) return reply(replyToken, `คูปองนี้ใช้ได้ในการมาครั้งถัดไป ตั้งแต่ ${thDate(c.vf)} ค่ะ`);
+  if (c.too_early) return reply(replyToken, `คูปองนี้เริ่มใช้ได้ตั้งแต่ ${thDate(c.vf)} ค่ะ`);
   if (c.expired) return reply(replyToken, `คูปองนี้หมดอายุแล้วเมื่อ ${thDate(c.vt)} ค่ะ`);
   if (!confirmed) {
     return send(replyToken, [{
@@ -283,41 +298,145 @@ async function handle(ev: any) {
   const userId: string | undefined = ev.source?.userId;
   await sql`insert into raw.line_events (event_type, line_user_id, event_ts, payload)
             values (${ev.type}, ${userId ?? null}, to_timestamp(${(ev.timestamp ?? Date.now()) / 1000}), ${sql.json(ev)})`;
-  if (!userId || ev.source?.type !== "user") return;   // ignore group/room events
+  if (!userId || ev.source?.type !== "user") return;
 
-  if (ev.type === "follow") return ensureMember(userId);              // greeting = the OA's built-in greeting message
+  if (ev.type === "follow") {                     // the OA greeting text comes from the OA Manager; we add the button
+    await ensureMember(userId);
+    const s = await settings();
+    if (await memberCard(userId)) return;         // re-follow of a linked member: nothing extra
+    return send(ev.replyToken, [await signupMessage(userId, s)]);
+  }
   if (ev.type === "unfollow") {
     await sql`update crm.line_members set blocked_at = now(), updated_at = now() where line_user_id = ${userId}`;
     return;
   }
   if (ev.type === "postback") {
     const q = new URLSearchParams(ev.postback?.data ?? "");
-    if (q.get("oaPlusRichMenu") === "true") {                          // OA Manager menu button
+    if (q.get("oaPlusRichMenu") === "true") {
       const s = await settings(), id = q.get("actionId") ?? "";
       if (id && id === s.menu_action_card) return onMenu(userId, ev.replyToken, "card");
-      if (id && id === s.menu_action_coupons) return onMenu(userId, ev.replyToken, "coupons");
+      if (id && (id === s.menu_action_promotions || id === s.menu_action_coupons)) return onMenu(userId, ev.replyToken, "promotions");
       console.log("unmapped OA menu action", id, q.get("version"));
       return;
     }
     const action = q.get("action");
-    if (action === "register" || action === "card" || action === "coupons") return onMenu(userId, ev.replyToken, action);
+    if (action === "card" || action === "register") return onMenu(userId, ev.replyToken, action);
+    if (action === "promotions" || action === "coupons") return onMenu(userId, ev.replyToken, "promotions");
     if (action === "redeem" || action === "redeem_ok") return onRedeem(userId, ev.replyToken, Number(q.get("id")), action === "redeem_ok");
-    return;                                                            // noop / unknown
+    return;
   }
   if (ev.type === "message" && ev.message?.type === "text") {
     const word = KEYWORDS[(ev.message.text ?? "").trim().toLowerCase()];
     if (word) return onMenu(userId, ev.replyToken, word);
-    const { digitLike, phone } = cleanNumber(ev.message.text ?? "");
-    if (!digitLike) return;                                            // ordinary chat: stay silent for staff
-    await ensureMember(userId);
-    if (!phone) return reply(ev.replyToken, MSG.retry);
-    return onPhone(userId, ev.replyToken, phone);
+    const { digitLike } = cleanNumber(ev.message.text ?? "");
+    if (!digitLike) return;                       // ordinary chat: stay silent for staff
+    return onMenu(userId, ev.replyToken, "register"); // a typed number: card if linked, else the form button
+  }
+}
+
+// ---------- sign-up form API (/signup) ----------
+const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+               "Access-Control-Allow-Headers": "content-type" };
+const json = (o: unknown, status = 200) => Response.json(o, { status, headers: CORS });
+
+async function tokenRow(tok: string) {
+  if (!/^[a-f0-9]{40}$/.test(tok)) return null;
+  const [r] = await sql`select t.line_user_id, m.phone, m.full_name, m.display_name,
+                               to_char(m.birthday,'YYYY-MM-DD') birthday, m.branch_id, m.consent_at
+                        from crm.signup_tokens t join crm.line_members m using (line_user_id)
+                        where t.token = ${tok} and t.used_at is null and t.expires_at > now()`;
+  return r ?? null;
+}
+
+async function signupApi(req: Request): Promise<Response> {
+  if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+  const s = await settings();
+  if (req.method === "GET") {
+    const r = await tokenRow(new URL(req.url).searchParams.get("t") ?? "");
+    if (!r) return json({ ok: false, error: "expired" }, 410);
+    const branches = await sql`select branch_id id, name from crm.branches where active order by sort`;
+    return json({ ok: true, member: { phone: r.phone, full_name: r.full_name ?? r.display_name ?? "",
+      birthday: r.birthday, branch_id: r.branch_id }, branches, privacy_version: s.privacy_version,
+      reward: s.reward_text });
+  }
+  if (req.method !== "POST") return json({ ok: false, error: "method" }, 405);
+  let f: any;
+  try { f = await req.json(); } catch { return json({ ok: false, error: "ข้อมูลไม่ถูกต้อง" }, 400); }
+  const r = await tokenRow(String(f.t ?? ""));
+  if (!r) return json({ ok: false, error: "ลิงก์นี้ใช้แล้วหรือหมดอายุค่ะ กลับไปที่แชตแล้วกด MEMBERS เพื่อรับลิงก์ใหม่" }, 410);
+  const name = String(f.full_name ?? "").trim().slice(0, 100);
+  const bday = String(f.birthday ?? "");
+  const branchId = Number(f.branch_id);
+  const { phone } = cleanNumber(String(f.phone ?? ""));
+  const bdOk = /^\d{4}-\d{2}-\d{2}$/.test(bday) && bday >= "1920-01-01" && bday <= bkkDate(-365 * 5);
+  const [br] = Number.isInteger(branchId) ? await sql`select 1 from crm.branches where branch_id = ${branchId} and active` : [];
+  if (name.length < 2) return json({ ok: false, error: "กรุณากรอกชื่อค่ะ" }, 400);
+  if (!bdOk) return json({ ok: false, error: "กรุณาเลือกวันเกิดค่ะ" }, 400);
+  if (!br) return json({ ok: false, error: "กรุณาเลือกสาขาค่ะ" }, 400);
+  if (!phone) return json({ ok: false, error: "เบอร์โทรไม่ถูกต้องค่ะ กรุณากรอก 10 หลัก เช่น 0812345678" }, 400);
+  if (f.consent !== true) return json({ ok: false, error: "กรุณากดยินยอมก่อนสมัครค่ะ" }, 400);
+  if (r.phone && r.phone !== phone) return json({ ok: false, error: MSG.otherNumber(r.phone) }, 409);
+  const [owner] = await sql`select 1 from crm.line_members where phone = ${phone} and line_user_id <> ${r.line_user_id}`;
+  if (owner) return json({ ok: false, error: MSG.taken }, 409);
+
+  const isNew = !r.phone;
+  const days = Math.max(1, parseInt(s.reward_days || "14", 10));
+  const from = bkkDate(1), to = bkkDate(days);
+  const reward = s.reward_text || "เก๊กฮวยฟรี 1 แก้ว";
+  try {
+    await sql.begin(async (tx) => {
+      const used = await tx`update crm.signup_tokens set used_at = now() where token = ${f.t} and used_at is null returning 1`;
+      if (!used.length) throw new Error("token raced");
+      await tx`update crm.line_members set phone = ${phone}, linked_at = coalesce(linked_at, now()),
+                 full_name = ${name}, birthday = ${bday}, branch_id = ${branchId},
+                 consent_at = now(), consent_version = ${s.privacy_version || null},
+                 signup_source = coalesce(signup_source, 'form'), updated_at = now()
+               where line_user_id = ${r.line_user_id}`;
+      if (isNew) await tx`insert into crm.coupons (line_user_id, kind, title, valid_from, valid_to)
+                          values (${r.line_user_id}, 'signup', ${reward}, ${from}, ${to})
+                          on conflict (line_user_id, kind) do nothing`;
+    });
+  } catch (e) {
+    if (String(e).includes("line_members_phone_uq")) return json({ ok: false, error: MSG.taken }, 409);
+    console.error("signup failed", e);
+    return json({ ok: false, error: "บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้งค่ะ" }, 500);
+  }
+  if (s.signup_push !== "off") {
+    try {
+      const card = await memberCard(r.line_user_id);
+      await push(r.line_user_id, [{ type: "text", text: isNew ? MSG.confirm(phone, reward, from, to) : MSG.updated }, card]);
+    } catch (e) { console.error("signup push failed", e); }
+  }
+  return json({ ok: true, isNew });
+}
+
+// ---------- admin push (one-time key) ----------
+async function adminPush(req: Request, body: string, sendKey: string): Promise<Response> {
+  const armed = await sql`update crm.settings set value = null, updated_at = now()
+                          where key = 'send_key' and value is not null and value = ${sendKey} returning 1`;
+  if (armed.length !== 1) return new Response("not armed", { status: 403 });
+  try {
+    const { to, mode, note, include_inactive } = JSON.parse(body);
+    const s = await settings();
+    let msg: unknown = null;
+    if (mode === "card") msg = await memberCard(String(to));
+    else if (mode === "promotions") msg = await promotions(String(to), include_inactive === true);
+    else if (mode === "signup") msg = await signupMessage(String(to), s);
+    if (!msg) return Response.json({ ok: false, error: `nothing to send for mode ${mode}` }, { status: 400 });
+    await push(String(to), note ? [{ type: "text", text: String(note) }, msg] : [msg]);
+    return Response.json({ ok: true, mode });
+  } catch (e) {
+    return Response.json({ ok: false, error: String(e) }, { status: 500 });
   }
 }
 
 Deno.serve(async (req) => {
+  const path = new URL(req.url).pathname;
+  if (path.endsWith("/signup")) return signupApi(req);
   if (req.method !== "POST") return new Response("ok");
   const body = await req.text();
+  const sendKey = req.headers.get("x-send-key");
+  if (sendKey) return adminPush(req, body, sendKey);
   if (!(await validSignature(body, req.headers.get("x-line-signature")))) {
     return new Response("bad signature", { status: 401 });
   }

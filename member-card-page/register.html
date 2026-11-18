@@ -1,0 +1,79 @@
+<!doctype html>
+<!-- Mama Pook LINE sign-up form (Point 2026-11-18). Opened from the chat's "สมัครสมาชิก" button with a
+     one-time ?t= token; talks to the line-webhook function's /signup door. Fields: name, birthday,
+     branch, phone, consent. SMS one-time code comes later. Privacy wording = DRAFT until Point approves. -->
+<html lang="th"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>สมัครสมาชิก Mama Pook</title>
+<style>
+  :root { --red:#C8102E; --ink:#1D1D1F; --grey:#8E8E93; --line:#E5E5EA; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Sukhumvit Set","Noto Sans Thai",sans-serif;
+         color:var(--ink); background:#F7F7F8; }
+  header { background:var(--red); color:#fff; padding:18px 20px; }
+  header h1 { margin:0; font-size:20px; } header p { margin:4px 0 0; font-size:14px; opacity:.9; }
+  main { padding:16px 20px 32px; max-width:480px; margin:0 auto; }
+  label { display:block; font-size:14px; font-weight:600; margin:16px 0 6px; }
+  input, select { width:100%; font-size:17px; padding:12px; border:1px solid var(--line); border-radius:10px;
+                  background:#fff; color:var(--ink); }
+  .consent { display:flex; gap:10px; align-items:flex-start; margin-top:20px; font-size:13px; line-height:1.5;
+             background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .consent input { width:22px; height:22px; flex:none; margin-top:2px; }
+  button { width:100%; margin-top:22px; font-size:17px; font-weight:600; padding:14px; border:0; border-radius:12px;
+           background:var(--red); color:#fff; }
+  button:disabled { opacity:.5; }
+  .err { color:var(--red); font-size:14px; margin-top:12px; min-height:20px; }
+  .done { text-align:center; padding:40px 10px; } .done h2 { margin:0 0 10px; }
+  .hint { color:var(--grey); font-size:12px; margin-top:4px; }
+</style></head>
+<body>
+<header><h1>สมัครสมาชิก Mama Pook</h1><p id="sub">รับฟรี เก๊กฮวย 1 แก้ว ในการมาครั้งถัดไป</p></header>
+<main id="main"><p>กำลังโหลด...</p></main>
+<script>
+const API = "https://qtpwrwapbefczvqdfzes.supabase.co/functions/v1/line-webhook/signup";
+const t = new URLSearchParams(location.search).get("t") || "";
+const main = document.getElementById("main");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const doneMsg = (h, p) => { main.innerHTML = `<div class="done"><h2>${esc(h)}</h2><p>${esc(p)}</p></div>`; };
+
+async function start() {
+  let d;
+  try { d = await (await fetch(`${API}?t=${encodeURIComponent(t)}`)).json(); } catch { d = null; }
+  if (!d || !d.ok) return doneMsg("ลิงก์นี้ใช้แล้วหรือหมดอายุ", "กลับไปที่แชต LINE แล้วกดปุ่ม MEMBERS เพื่อรับลิงก์ใหม่ค่ะ");
+  if (d.reward) document.getElementById("sub").textContent = `รับฟรี ${d.reward} ในการมาครั้งถัดไป`;
+  const m = d.member, today = new Date().toISOString().slice(0, 10);
+  main.innerHTML = `
+    <label for="name">ชื่อ-นามสกุล</label>
+    <input id="name" autocomplete="name" maxlength="100" value="${esc(m.full_name)}">
+    <label for="bday">วันเกิด</label>
+    <input id="bday" type="date" min="1920-01-01" max="${today}" value="${esc(m.birthday || "")}">
+    <label for="branch">สาขาที่ไปบ่อย</label>
+    <select id="branch"><option value="">เลือกสาขา</option>${d.branches.map(b =>
+      `<option value="${b.id}" ${b.id === m.branch_id ? "selected" : ""}>${esc(b.name)}</option>`).join("")}</select>
+    <label for="phone">เบอร์โทรศัพท์</label>
+    <input id="phone" type="tel" inputmode="numeric" maxlength="12" placeholder="0812345678" value="${esc(m.phone || "")}" ${m.phone ? "readonly" : ""}>
+    <div class="hint">${m.phone ? "เปลี่ยนเบอร์ได้ที่พนักงานหน้าร้านค่ะ" : "ใช้เบอร์นี้สะสมแต้มที่แคชเชียร์ทุกครั้ง"}</div>
+    <div class="consent"><input id="consent" type="checkbox">
+      <span>ข้าพเจ้ายินยอมให้ Mama Pook เก็บและใช้ชื่อ วันเกิด สาขา และเบอร์โทรศัพท์ของข้าพเจ้า เพื่อให้บริการสมาชิก
+      สะสมและแลกแต้ม และส่งสิทธิพิเศษหรือโปรโมชั่นทาง LINE ข้าพเจ้าขอแก้ไขหรือยกเลิกได้ทุกเมื่อ โดยแจ้งพนักงานหรือทักแชต LINE นี้</span></div>
+    <button id="go">สมัครสมาชิก</button>
+    <div class="err" id="err"></div>`;
+  document.getElementById("go").onclick = submit;
+}
+
+async function submit() {
+  const btn = document.getElementById("go"), err = document.getElementById("err");
+  err.textContent = ""; btn.disabled = true;
+  const body = { t, full_name: document.getElementById("name").value, birthday: document.getElementById("bday").value,
+    branch_id: Number(document.getElementById("branch").value), phone: document.getElementById("phone").value,
+    consent: document.getElementById("consent").checked };
+  let d;
+  try { d = await (await fetch(API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json(); }
+  catch { d = { ok: false, error: "เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่อีกครั้งค่ะ" }; }
+  if (d.ok) return doneMsg(d.isNew ? "สมัครสมาชิกเรียบร้อยค่ะ" : "บันทึกข้อมูลเรียบร้อยค่ะ",
+                           "กลับไปที่แชต LINE ได้เลยค่ะ บัตรสมาชิกของคุณอยู่ในแชตแล้ว");
+  err.textContent = d.error || "บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้งค่ะ"; btn.disabled = false;
+}
+start();
+</script>
+</body></html>

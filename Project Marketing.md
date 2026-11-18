@@ -73,6 +73,10 @@ Phone-number link between LINE friends of @mamapook and POS members, with a next
 `member-card-page/` on Cloudflare (`mamapook-member.itthichet-a.workers.dev`). Inert until the
 owner enters the LINE secrets. Full decisions, addresses and the owner checklist:
 `docs/07-line-member-link-setup.md`. Design: LINE Member Link Playbook (sales site `#mk-crm`).
+Member program v4 (built 2026-11-18): sign-up form (`member-card-page/register.html` on Worker
+`mamapook-member`, one-time links in `crm.signup_tokens`), ERS points + reward ladder on the card
+(`crm.pos_points` / `crm.pos_rewards`, pushed every pipeline cycle by `~/mamapook-data/tools/crm_points_push.py`
+to Edge Function `crm-points-sync`), PROMOTIONS button (`crm.promotions`). Migration 0012. SMS code not built.
 LINE coupon API (tested 2026-11-18): Edge Function `line-coupon-send` creates a real LINE
 built-in coupon (POST /v2/bot/coupon) and pushes it as a `coupon` message to chosen user IDs,
 armed by a one-time key in `crm.settings.send_key`. One push to one person used 1 message of
@@ -120,3 +124,4 @@ quota. LINE gives no per-person usage data for these coupons; totals are in OA M
 - 2026-11-18 — `line-coupon-send` v2 adds mode "card": pushes each person their member card (our crm.coupons, staff tap). Test coupon id 3 (kind test-2026-11-18, valid 18–19 Nov) pushed to Point with a note; one push of note + card used 1 message (quota 4→5). The card code is a copy of the webhook's memberCard; keep the two in sync.
 - 2026-11-18 — Decided (Point): earned coupons live on our member card, promotional coupons go as LINE coupons by API. Points: ERS is the only points system; card shows the ERS balance (~30 min) and a view-only reward ladder; all redemption at the cashier with the ERS redemption item; only the sign-up เก๊กฮวย uses the staff tap. Details in docs/07. Not built yet.
 - 2026-11-18 — Decided (Point): drop the COUPONS list; second button = PROMOTIONS from `crm.promotions` (open to everyone, per-branch later); SMS one-time code on phone numbers; sign-up form (name, birthday, branch, phone, consent) opened from the chat. Details in docs/07. Not built yet.
+- 2026-11-18 — Built v4: migration 0012, crm-points-sync, line-webhook v4 (card with points/rewards/inline buttons, PROMOTIONS, sign-up form API, admin push), sign-up form page, pipeline step crm_points (backbone repo). Tested on Point's account. Waiting on Point: privacy wording, OA greeting, PROMOTIONS button label, real promotions.
