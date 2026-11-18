@@ -131,3 +131,9 @@ All functions are inert until the secrets below exist.
 - Only the sign-up เก๊กฮวย uses the staff tap on the card. Promotional coupons go out as LINE coupons through the API.
 - Open: whether ERS points expire (not answered yet; card shows no expiry until decided).
 
+## Menu, promotions, phone code and sign-up form (decided 2026-11-18, Point)
+- COUPONS list dropped: LINE can't tell us which coupons a customer has left, so promotional LINE coupons stay in the chat and customers scroll back to them.
+- The second menu button becomes PROMOTIONS: promotions open to everyone (per-branch later). The webhook replies with a swipeable set of cards (picture, text, dates, branch) from table `crm.promotions` in this Marketing project; expired ones hide themselves; replies are free. Pictures in a public storage bucket. Point edits rows in the Supabase Table Editor at first; a sales-site form later. Changing the button in OA Manager may change its actionId: re-map from the "unmapped OA menu action" log.
+- Phone numbers are verified by a 6-digit SMS one-time code before linking (needed once the card shows ERS points). Needs a Thai SMS provider account opened by Point and a sender name; the provider key goes into Supabase secrets by Point, never into chat.
+- Sign-up becomes a form opened from a "สมัครสมาชิก" button that the webhook sends on follow (free reply), through a one-time link tied to the LINE user. Fields: name, birthday, branch, phone (with code), consent with a short privacy notice (Thai PDPA). After submit the reply shows the member card with the free เก๊กฮวย as today.
+
