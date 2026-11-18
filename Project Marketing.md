@@ -76,6 +76,8 @@ owner enters the LINE secrets. Full decisions, addresses and the owner checklist
 Member program v4 (built 2026-11-18): sign-up form (`member-card-page/register.html` on Worker
 `mamapook-member`, one-time links in `crm.signup_tokens`), ERS points + reward ladder on the card
 (`crm.pos_points` / `crm.pos_rewards`, pushed every pipeline cycle by `~/mamapook-data/tools/crm_points_push.py`
+
+**CRM admin area (2026-11-18):** config, members, promotions, coupon sends and insights now live in the sales site's CRM area (whole site behind login) — Edge Function `crm-admin` (supabase/functions/crm-admin, migration 0014). The one-time-key scripts (line-coupon-send, line-webhook admin push) stay for emergencies. See docs/07 and the sales repo's Project Sales Web.md › CRM area.
 to Edge Function `crm-points-sync`), PROMOTIONS button (`crm.promotions`). Migration 0012. SMS code not built.
 LINE coupon API (tested 2026-11-18): Edge Function `line-coupon-send` creates a real LINE
 built-in coupon (POST /v2/bot/coupon) and pushes it as a `coupon` message to chosen user IDs,
