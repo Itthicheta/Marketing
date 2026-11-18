@@ -2,7 +2,7 @@
 // (tools/crm_points_push.py, every ~30 min after the POS load) and replaces crm.pos_points,
 // crm.pos_rewards and crm.branches (Point 2026-11-18: ERS is the only points system).
 // Guard: header x-sync-key must equal crm.settings.points_sync_key (kept in the Mac .env as
-// MARKETING_POINTS_KEY). verify_jwt = false. Refuses an empty member list so a bad query can't wipe it.
+// MARKETING_POINTS_KEY). verify_jwt = false. Active rows in crm.test_points are re-applied after each replace. Refuses an empty member list so a bad query can't wipe it.
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -26,6 +26,10 @@ Deno.serve(async (req) => {
         }));
         await tx`insert into crm.pos_points ${tx(chunk, "phone", "points", "as_of", "last_bill_at", "last_branch_id")}`;
       }
+      // demo balances (crm.test_points, 0013) survive the replace until they expire
+      await tx`insert into crm.pos_points (phone, points, as_of)
+               select phone, points, now() from crm.test_points where expires_at > now()
+               on conflict (phone) do update set points = excluded.points, as_of = excluded.as_of`;
       if (Array.isArray(rewards)) {
         await tx`delete from crm.pos_rewards`;
         const rw = rewards.map((r: any) => ({ item_code: String(r.item_code), ers_name: String(r.ers_name), points: Number(r.points) }));
