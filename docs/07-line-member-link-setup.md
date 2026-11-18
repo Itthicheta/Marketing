@@ -118,4 +118,5 @@ All functions are inert until the secrets below exist.
 - First test: coupon 01M7PCBVPR38CYTZSRHVZHNAH2 pushed to Point only. Quota went 3 → 4, so a coupon push costs one message per person (a reply would be free).
 - Limits: coupons can't be edited (close and recreate), up to 5,000 live coupons per channel, no API or webhook for who opened or used a coupon (OA Manager Insights shows totals only).
 - Plan: the CRM-tab send form should use this API instead of copied share links, and record recipients in our own table.
+- v2 (2026-11-18): body `{mode:"card", note?, to:[...]}` pushes each linked member their own member card, so our own coupons (crm.coupons, staff tap) can be announced by push. One push request counts as one message per person even with a note plus the card. The card builder is a copy of line-webhook's memberCard: change both together.
 

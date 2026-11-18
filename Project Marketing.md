@@ -117,3 +117,4 @@ quota. LINE gives no per-person usage data for these coupons; totals are in OA M
   added: Marketing never touches operation_log.* and vice versa.
 - 2026-11-17 — LINE member link built and deployed (crm schema, 3 Edge Functions, card page); waiting on owner LINE steps A, 9, 11–13, 15. See docs/07.
 - 2026-11-18 — LINE coupon API test: `line-coupon-send` deployed; test coupon 01M7PCBVPR38CYTZSRHVZHNAH2 (free เก๊กฮวย, valid to 2026-11-19, one use) pushed to Point only; quota 3→4. Decision pending: build the CRM-tab send form on this API instead of share links.
+- 2026-11-18 — `line-coupon-send` v2 adds mode "card": pushes each person their member card (our crm.coupons, staff tap). Test coupon id 3 (kind test-2026-11-18, valid 18–19 Nov) pushed to Point with a note; one push of note + card used 1 message (quota 4→5). The card code is a copy of the webhook's memberCard; keep the two in sync.
