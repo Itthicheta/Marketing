@@ -23,6 +23,7 @@ const EDITABLE: Record<string, (v: string) => boolean> = {
   reward_days: (v) => /^\d+$/.test(v) && +v >= 1 && +v <= 90,
   points_expiry_note: (v) => v.length <= 60,
   signup_push: (v) => v === "on" || v === "off",
+  signup_reward: (v) => v === "on" || v === "off",
   privacy_version: (v) => v.length >= 2 && v.length <= 40,
 };
 const PHONE = /^0[689]\d{8}$/;

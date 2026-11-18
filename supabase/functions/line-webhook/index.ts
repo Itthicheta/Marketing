@@ -8,7 +8,8 @@
 //     {to, mode: card|promotions|signup, note?, include_inactive?} -> push to one LINE user.
 // Decisions (docs/07): ERS is the only points system; the card shows the ERS balance (crm.pos_points,
 // ~30 min, from the Mac pipeline) and a view-only reward ladder (crm.pos_rewards); redemption only at the
-// cashier in ERS; points expire after 3 months; only the sign-up เก๊กฮวย uses the staff tap. PROMOTIONS =
+// cashier in ERS; points expire after 3 months; only the sign-up เก๊กฮวย uses the staff tap. The sign-up gift has an
+// on/off switch, crm.settings.signup_reward (0015; off since 2026-11-18, Point). PROMOTIONS =
 // crm.promotions, open to everyone. Promotional coupons go out as LINE coupons (line-coupon-send).
 // OA Manager menu buttons arrive as postbacks "oaPlusRichMenu=true&actionId=<id>"; ids are mapped in
 // crm.settings (menu_action_card, menu_action_promotions); unmapped ids are logged for re-mapping.
@@ -101,9 +102,9 @@ const MSG = {
   already: "บัญชีนี้ลงทะเบียนไว้แล้วค่ะ แสดงบัตรนี้ให้แคชเชียร์ได้เลยค่ะ",
   otherNumber: (p: string) =>
     `บัญชีนี้ลงทะเบียนเบอร์ ${fmtPhone(p)} ไว้แล้วค่ะ หากต้องการเปลี่ยนเบอร์ รบกวนแจ้งพนักงานที่ร้านนะคะ`,
-  confirm: (p: string, reward: string, from: string, to: string) =>
+  confirm: (p: string, reward: string | null, from: string, to: string) =>
     `สมัครสมาชิกเรียบร้อยค่ะ เบอร์สมาชิก ${fmtPhone(p)}\n` +
-    `รับ${reward} ในการมาครั้งถัดไป ใช้ได้ ${thDate(from)} ถึง ${thDate(to)}\n` +
+    (reward ? `รับ${reward} ในการมาครั้งถัดไป ใช้ได้ ${thDate(from)} ถึง ${thDate(to)}\n` : "") +
     `ครั้งหน้ากดปุ่ม "MEMBERS" ที่เมนูด้านล่าง แล้วแสดงบัตรให้แคชเชียร์ได้เลยค่ะ`,
   updated: "บันทึกข้อมูลเรียบร้อยค่ะ ขอบคุณค่ะ",
   noPromo: "ยังไม่มีโปรโมชั่นตอนนี้ค่ะ ติดตามได้เร็วๆ นี้นะคะ",
@@ -242,7 +243,7 @@ async function signupMessage(userId: string, s: Record<string, string>) {
     contents: { type: "bubble",
       body: { type: "box", layout: "vertical", spacing: "sm", contents: [
         txt("สมัครสมาชิก Mama Pook", { weight: "bold", size: "lg" }),
-        txt(`รับฟรี ${s.reward_text || "เก๊กฮวย 1 แก้ว"} ในการมาครั้งถัดไป`, { size: "sm" }),
+        ...(s.signup_reward !== "off" ? [txt(`รับฟรี ${s.reward_text || "เก๊กฮวย 1 แก้ว"} ในการมาครั้งถัดไป`, { size: "sm" })] : []),
         txt("สะสมแต้ม 100 บาท = 1 แต้ม เพื่อแลกของฟรี", { size: "sm", color: GREY }),
       ] },
       footer: { type: "box", layout: "vertical", contents: [{
@@ -357,7 +358,7 @@ async function signupApi(req: Request): Promise<Response> {
     const branches = await sql`select branch_id id, name from crm.branches where active order by sort`;
     return json({ ok: true, member: { phone: r.phone, full_name: r.full_name ?? r.display_name ?? "",
       birthday: r.birthday, branch_id: r.branch_id }, branches, privacy_version: s.privacy_version,
-      reward: s.reward_text });
+      reward: s.signup_reward !== "off" ? s.reward_text : null });
   }
   if (req.method !== "POST") return json({ ok: false, error: "method" }, 405);
   let f: any;
@@ -383,6 +384,7 @@ async function signupApi(req: Request): Promise<Response> {
   const days = Math.max(1, parseInt(s.reward_days || "14", 10));
   const from = bkkDate(1), to = bkkDate(days);
   const reward = s.reward_text || "เก๊กฮวยฟรี 1 แก้ว";
+  const giveReward = s.signup_reward !== "off";   // 0015 switch (Point 2026-11-18: off for now)
   try {
     await sql.begin(async (tx) => {
       const used = await tx`update crm.signup_tokens set used_at = now() where token = ${f.t} and used_at is null returning 1`;
@@ -392,7 +394,7 @@ async function signupApi(req: Request): Promise<Response> {
                  consent_at = now(), consent_version = ${s.privacy_version || null},
                  signup_source = coalesce(signup_source, 'form'), updated_at = now()
                where line_user_id = ${r.line_user_id}`;
-      if (isNew) await tx`insert into crm.coupons (line_user_id, kind, title, valid_from, valid_to)
+      if (isNew && giveReward) await tx`insert into crm.coupons (line_user_id, kind, title, valid_from, valid_to)
                           values (${r.line_user_id}, 'signup', ${reward}, ${from}, ${to})
                           on conflict (line_user_id, kind) do nothing`;
     });
@@ -404,7 +406,7 @@ async function signupApi(req: Request): Promise<Response> {
   if (s.signup_push !== "off") {
     try {
       const card = await memberCard(r.line_user_id);
-      await push(r.line_user_id, [{ type: "text", text: isNew ? MSG.confirm(phone, reward, from, to) : MSG.updated }, card]);
+      await push(r.line_user_id, [{ type: "text", text: isNew ? MSG.confirm(phone, giveReward ? reward : null, from, to) : MSG.updated }, card]);
     } catch (e) { console.error("signup push failed", e); }
   }
   return json({ ok: true, isNew });

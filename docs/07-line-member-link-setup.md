@@ -148,4 +148,4 @@ All functions are inert until the secrets below exist.
 - line-coupon-send v3: coupon creation only; card pushes moved to the webhook so the card code exists once.
 - Tested 2026-11-18: form API (consent missing, phone taken, valid, token reuse, second token with another phone) with a throwaway member, then deleted; card, promotions preview (2 inactive test promotions) and the form button pushed to Point.
 - Owner to do: approve the privacy wording; shorten the OA Manager greeting (no more "type your number"); relabel the COUPONS button to PROMOTIONS (re-map its action id if taps stop working); add real promotions in crm.promotions; brief staff to create ERS members with the same phone.
-
+- **2026-11-18 (Point): sign-up gift OFF for now.** Switch `crm.settings.signup_reward` (0015): off = no coupon on sign-up and no gift wording on the chat button, form or confirmation; already-issued coupons stay. Toggle in the sales site CRM › Settings. Same day: Job's member record (1 coupon, 3 LINE events) deleted at Point's request (logged in crm.admin_log).
