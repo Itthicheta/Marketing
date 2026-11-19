@@ -210,13 +210,16 @@ async function memberCard(userId: string) {
 
 // ---------- PROMOTIONS ----------
 async function promotions(userId: string | null, includeInactive = false) {
+  // branch_ids (0016): null/empty = all branches; otherwise only members whose sign-up branch is listed
   const t = bkkDate();
-  const [m] = userId ? await sql`select branch_id from crm.line_members where line_user_id = ${userId}` : [null];
+  const [m] = userId ? await sql`select m.branch_id, b.name branch from crm.line_members m
+                                 left join crm.branches b using (branch_id) where m.line_user_id = ${userId}` : [null];
   const rows = await sql`
-    select p.title, p.body, p.image_url, to_char(p.valid_to,'YYYY-MM-DD') vt, b.name branch
-    from crm.promotions p left join crm.branches b on b.branch_id = p.branch_id
+    select p.title, p.body, p.image_url, to_char(p.valid_to,'YYYY-MM-DD') vt,
+           coalesce(cardinality(p.branch_ids), 0) > 0 only_some
+    from crm.promotions p
     where (p.active or ${includeInactive}) and ${t}::date between p.valid_from and p.valid_to
-      and (p.branch_id is null or p.branch_id = ${m?.branch_id ?? -1} or ${includeInactive})
+      and (coalesce(cardinality(p.branch_ids), 0) = 0 or ${m?.branch_id ?? -1} = any(p.branch_ids) or ${includeInactive})
     order by p.sort, p.valid_to limit 12`;
   if (!rows.length) return null;
   return {
@@ -227,7 +230,7 @@ async function promotions(userId: string | null, includeInactive = false) {
       body: { type: "box", layout: "vertical", spacing: "sm", contents: [
         txt(r.title, { weight: "bold", size: "md", align: "start" }),
         ...(r.body ? [txt(r.body, { size: "sm", align: "start" })] : []),
-        txt(`ถึง ${thDate(r.vt)}${r.branch ? ` · สาขา ${r.branch}` : ""}`, { size: "xs", color: GREY, align: "start" }),
+        txt(`ถึง ${thDate(r.vt)}${r.only_some && m?.branch ? ` · สาขา ${m.branch}` : ""}`, { size: "xs", color: GREY, align: "start" }),
       ] },
     })) },
   };

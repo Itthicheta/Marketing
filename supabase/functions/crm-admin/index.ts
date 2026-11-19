@@ -57,6 +57,7 @@ async function sha256hex(s: string) {
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 const bad = (msg: string, status = 400) => Response.json({ ok: false, error: msg }, { status });
+const badField = (field: string, msg: string) => Response.json({ ok: false, error: msg, field }, { status: 400 });
 const log = (actor: string, op: string, detail: unknown) =>
   sql`insert into crm.admin_log (actor, op, detail) values (${actor}, ${op}, ${sql.json(detail as any)})`;
 
@@ -166,7 +167,7 @@ async function config() {
                        from crm.settings where key = any(${Object.keys(EDITABLE)}) order by key`;
   const [form] = await sql`select value from crm.settings where key = 'signup_form_url'`;
   const promos = await sql`select id, title, body, image_url, to_char(valid_from, 'YYYY-MM-DD') valid_from,
-      to_char(valid_to, 'YYYY-MM-DD') valid_to, branch_id, sort, active from crm.promotions order by active desc, sort, valid_to desc`;
+      to_char(valid_to, 'YYYY-MM-DD') valid_to, coalesce(branch_ids, '{}') branch_ids, sort, active from crm.promotions order by active desc, sort, valid_to desc`;
   const rewards = await sql`select r.item_code, r.ers_name, r.points, d.display_name, coalesce(d.hidden, false) hidden
       from crm.pos_rewards r left join crm.reward_display d using (item_code) order by r.points, r.item_code`;
   const branches = await sql`select branch_id, name, active from crm.branches order by sort`;
@@ -188,21 +189,29 @@ async function write(op: string, f: any, actor: string) {
     return Response.json({ ok: true });
   }
   if (op === "promo_save") {
+    // field names in errors let the page outline the wrong input (Point 2026-11-19)
     const title = String(f.title ?? "").trim(), body = String(f.body ?? "").trim() || null;
     const img = String(f.image_url ?? "").trim() || null;
     const vf = String(f.valid_from ?? ""), vt = String(f.valid_to ?? "");
-    const branch = f.branch_id === "" || f.branch_id == null ? null : Number(f.branch_id);
+    const ids = [...new Set((Array.isArray(f.branch_ids) ? f.branch_ids : []).map(Number).filter(Number.isInteger))];
     const sort = Number.isFinite(Number(f.sort)) ? Number(f.sort) : 100, active = f.active === true;
-    if (title.length < 2 || title.length > 80) return bad("กรุณาใส่ชื่อโปรโมชั่น (2–80 ตัวอักษร)");
-    if (!DAY.test(vf) || !DAY.test(vt) || vt < vf) return bad("วันที่ไม่ถูกต้อง");
-    if (img && !/^https:\/\/\S+$/.test(img)) return bad("ลิงก์รูปต้องขึ้นต้นด้วย https://");
-    if (body && body.length > 300) return bad("รายละเอียดยาวเกิน 300 ตัวอักษร");
+    if (title.length < 2 || title.length > 80) return badField("title", "กรุณาใส่ชื่อโปรโมชั่น (2–80 ตัวอักษร)");
+    if (body && body.length > 300) return badField("body", "รายละเอียดยาวเกิน 300 ตัวอักษร");
+    if (img && !/^https:\/\/\S+$/.test(img)) return badField("image_url", "ลิงก์รูปต้องขึ้นต้นด้วย https://");
+    if (!DAY.test(vf)) return badField("valid_from", "กรุณาเลือกวันเริ่ม");
+    if (!DAY.test(vt)) return badField("valid_to", "กรุณาเลือกวันสิ้นสุด");
+    if (vt < vf) return badField("valid_to", "วันสิ้นสุดต้องไม่ก่อนวันเริ่ม");
+    if (ids.length) {
+      const [{ n }] = await sql`select count(*)::int n from crm.branches where branch_id = any(${sql.array(ids)}::int[]) and active`;
+      if (n !== ids.length) return badField("branches", "มีสาขาที่ไม่ถูกต้อง");
+    }
+    const bids = ids.length ? sql.array(ids) : null;
     let id = f.id ? Number(f.id) : null;
     if (id) await sql`update crm.promotions set title = ${title}, body = ${body}, image_url = ${img}, valid_from = ${vf},
-                        valid_to = ${vt}, branch_id = ${branch}, sort = ${sort}, active = ${active} where id = ${id}`;
-    else [{ id }] = await sql`insert into crm.promotions (title, body, image_url, valid_from, valid_to, branch_id, sort, active)
-                        values (${title}, ${body}, ${img}, ${vf}, ${vt}, ${branch}, ${sort}, ${active}) returning id`;
-    await log(actor, op, { id, title, valid_from: vf, valid_to: vt, branch_id: branch, active });
+                        valid_to = ${vt}, branch_ids = ${bids}::int[], sort = ${sort}, active = ${active} where id = ${id}`;
+    else [{ id }] = await sql`insert into crm.promotions (title, body, image_url, valid_from, valid_to, branch_ids, sort, active)
+                        values (${title}, ${body}, ${img}, ${vf}, ${vt}, ${bids}::int[], ${sort}, ${active}) returning id`;
+    await log(actor, op, { id, title, valid_from: vf, valid_to: vt, branch_ids: ids.length ? ids : null, active });
     return Response.json({ ok: true, id });
   }
   if (op === "promo_delete") {
