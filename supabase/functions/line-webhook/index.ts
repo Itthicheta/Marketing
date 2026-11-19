@@ -209,29 +209,47 @@ async function memberCard(userId: string) {
 }
 
 // ---------- PROMOTIONS ----------
+// Card look = crm.settings.promo_style (0018, set in the sales site CRM › โปรโมชั่น with a live preview).
+const PROMO_STYLE = { size: "kilo", ratio: "20:13", band: false, band_text: "โปรโมชั่น", color: RED,
+                      title_color: INK, dates: "end", branch: true };
+function promoStyle(s: Record<string, string>) {
+  try { return { ...PROMO_STYLE, ...JSON.parse(s.promo_style || "{}") }; } catch { return PROMO_STYLE; }
+}
 async function promotions(userId: string | null, includeInactive = false) {
   // branch_ids (0016): null/empty = all branches; otherwise only members whose sign-up branch is listed
-  const t = bkkDate();
+  const t = bkkDate(), st = promoStyle(await settings());
   const [m] = userId ? await sql`select m.branch_id, b.name branch from crm.line_members m
                                  left join crm.branches b using (branch_id) where m.line_user_id = ${userId}` : [null];
   const rows = await sql`
-    select p.title, p.body, p.image_url, to_char(p.valid_to,'YYYY-MM-DD') vt,
-           coalesce(cardinality(p.branch_ids), 0) > 0 only_some
+    select p.title, p.body, p.image_url, to_char(p.valid_from,'YYYY-MM-DD') vf, to_char(p.valid_to,'YYYY-MM-DD') vt,
+           coalesce(cardinality(p.branch_ids), 0) > 0 only_some, p.button_label, p.button_url
     from crm.promotions p
     where (p.active or ${includeInactive}) and ${t}::date between p.valid_from and p.valid_to
       and (coalesce(cardinality(p.branch_ids), 0) = 0 or ${m?.branch_id ?? -1} = any(p.branch_ids) or ${includeInactive})
     order by p.sort, p.valid_to limit 12`;
   if (!rows.length) return null;
+  const meta = (r: any) => {
+    const parts: string[] = [];
+    if (st.dates === "end") parts.push(`ถึง ${thDate(r.vt)}`);
+    else if (st.dates === "range") parts.push(`${r.vf.slice(8, 10)}/${r.vf.slice(5, 7)} – ${thDate(r.vt)}`);
+    if (st.branch) parts.push(r.only_some ? (m?.branch ? `สาขา ${m.branch}` : "บางสาขา") : "ทุกสาขา");
+    return parts.join(" · ");
+  };
   return {
     type: "flex", altText: "โปรโมชั่น Mama Pook",
     contents: { type: "carousel", contents: rows.map((r) => ({
-      type: "bubble", size: "kilo",
-      ...(r.image_url ? { hero: { type: "image", url: r.image_url, size: "full", aspectMode: "cover", aspectRatio: "20:13" } } : {}),
+      type: "bubble", size: st.size,
+      ...(st.band ? { header: { type: "box", layout: "vertical", backgroundColor: st.color, paddingAll: "8px",
+        contents: [txt(st.band_text || "โปรโมชั่น", { color: "#FFFFFF", weight: "bold", size: "sm", align: "start" })] } } : {}),
+      ...(r.image_url ? { hero: { type: "image", url: r.image_url, size: "full", aspectMode: "cover", aspectRatio: st.ratio } } : {}),
       body: { type: "box", layout: "vertical", spacing: "sm", contents: [
-        txt(r.title, { weight: "bold", size: "md", align: "start" }),
+        txt(r.title, { weight: "bold", size: "md", align: "start", color: st.title_color }),
         ...(r.body ? [txt(r.body, { size: "sm", align: "start" })] : []),
-        txt(`ถึง ${thDate(r.vt)} · ${r.only_some ? (m?.branch ? `สาขา ${m.branch}` : "บางสาขา") : "ทุกสาขา"}`, { size: "xs", color: GREY, align: "start" }),
+        ...(meta(r) ? [txt(meta(r), { size: "xs", color: GREY, align: "start" })] : []),
       ] },
+      ...(r.button_label && r.button_url ? { footer: { type: "box", layout: "vertical", contents: [{
+        type: "button", style: "primary", color: st.color, height: "sm",
+        action: { type: "uri", label: r.button_label, uri: r.button_url } }] } } : {}),
     })) },
   };
 }
