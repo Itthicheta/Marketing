@@ -230,7 +230,7 @@ async function promotions(userId: string | null, includeInactive = false) {
       body: { type: "box", layout: "vertical", spacing: "sm", contents: [
         txt(r.title, { weight: "bold", size: "md", align: "start" }),
         ...(r.body ? [txt(r.body, { size: "sm", align: "start" })] : []),
-        txt(`ถึง ${thDate(r.vt)}${r.only_some && m?.branch ? ` · สาขา ${m.branch}` : ""}`, { size: "xs", color: GREY, align: "start" }),
+        txt(`ถึง ${thDate(r.vt)} · ${r.only_some ? (m?.branch ? `สาขา ${m.branch}` : "บางสาขา") : "ทุกสาขา"}`, { size: "xs", color: GREY, align: "start" }),
       ] },
     })) },
   };
