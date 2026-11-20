@@ -12,6 +12,7 @@
 // v10 (2026-11-20): op member_visits {phone} = one row per visit. v9: members returns dine_visits. v8: pax / med_bowls / med_pax. v7: branch_visits + branch initials. v6: coupon_send takes reward (validReward), usageCondition (≤100, staff check it) and maxUse (1 | -1).
 // v11 (2026-11-20, 0025): coupon rules — reads rules_data; writes template_save, rule_save, rule_toggle, rule_preview
 // (draft rule inside a rolled-back transaction, last 14 days, ignores armed_at), group_save, group_delete.
+// v14 (0027): rules take require_clean (default true).
 // v13 (0026): a rule is by product (categories) OR by bill amount (min_spend), never both; multi = more than one coupon per bill.
 // v12: template_delete {id, withdraw?} (409 field "withdraw" while copies are still usable on cards), rule_delete {id}.
 import postgres from "npm:postgres@3.4.5";
@@ -111,7 +112,7 @@ async function rulesData() {
   const rules = await sql`select r.id::int id, r.name, r.template_id::int template_id, r.group_id::int group_id,
       coalesce(r.branch_ids, '{}') branch_ids, coalesce(r.days, '{}') days,
       to_char(r.t_from, 'HH24:MI') t_from, to_char(r.t_to, 'HH24:MI') t_to, coalesce(r.categories, '{}') categories, coalesce(r.item_ids, '{}')::int[] item_ids,
-      r.min_spend::float min_spend, r.multi,
+      r.min_spend::float min_spend, r.multi, r.require_clean,
       r.active, to_char(r.armed_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') armed_at, to_char(r.ends_on, 'YYYY-MM-DD') ends_on,
       count(c.id)::int issued, count(c.redeemed_at)::int used, count(distinct c.line_user_id)::int members
     from crm.coupon_rules r left join crm.coupons c on c.rule_id = r.id
@@ -158,6 +159,7 @@ async function parseRule(f: any): Promise<{ res?: Response; r?: any }> {
   if (!categories.length && min_spend === null) return { res: badField("categories", "เลือกสินค้าอย่างน้อย 1 หมวด หรือใส่ยอดบิล") };
   if (categories.length && min_spend !== null) return { res: badField("min_spend", "เลือกได้อย่างเดียว: สินค้า หรือ ยอดบิล") };
   const multi = f.multi !== false;
+  const require_clean = f.require_clean !== false;   // 0027: off = bills with a promotion / discount / points can earn too
   const item_ids = ints(f.item_ids);
   if (item_ids.length) {
     const [{ n }] = await sql`select count(*)::int n from crm.pos_menu
@@ -166,12 +168,12 @@ async function parseRule(f: any): Promise<{ res?: Response; r?: any }> {
   }
   const ends_on = f.ends_on ? String(f.ends_on) : null;
   if (ends_on && !DAY.test(ends_on)) return { res: badField("ends_on", "วันสิ้นสุดไม่ถูกต้อง") };
-  return { r: { name, template_id, group_id, branch_ids, days, t_from, t_to, categories, item_ids, ends_on, min_spend, multi } };
+  return { r: { name, template_id, group_id, branch_ids, days, t_from, t_to, categories, item_ids, ends_on, min_spend, multi, require_clean } };
 }
 async function insertRule(q: any, r: any): Promise<number> {
-  const [{ id }] = await q`insert into crm.coupon_rules (name, template_id, group_id, branch_ids, days, t_from, t_to, categories, item_ids, ends_on, min_spend, multi)
+  const [{ id }] = await q`insert into crm.coupon_rules (name, template_id, group_id, branch_ids, days, t_from, t_to, categories, item_ids, ends_on, min_spend, multi, require_clean)
       values (${r.name}, ${r.template_id}, ${r.group_id}, ${pgArr(r.branch_ids)}::int[], ${pgArr(r.days)}::int[],
-              ${r.t_from}::time, ${r.t_to}::time, ${pgArr(r.categories)}::text[], ${pgArr(r.item_ids)}::bigint[], ${r.ends_on}::date, ${r.min_spend}, ${r.multi})
+              ${r.t_from}::time, ${r.t_to}::time, ${pgArr(r.categories)}::text[], ${pgArr(r.item_ids)}::bigint[], ${r.ends_on}::date, ${r.min_spend}, ${r.multi}, ${r.require_clean})
       returning id`;
   return Number(id);
 }
@@ -349,7 +351,7 @@ async function write(op: string, f: any, actor: string) {
       // saving a live rule counts bills from now on (no backdating with the new conditions)
       const u = await sql`update crm.coupon_rules set name = ${r.name}, template_id = ${r.template_id}, group_id = ${r.group_id},
           branch_ids = ${pgArr(r.branch_ids)}::int[], days = ${pgArr(r.days)}::int[], t_from = ${r.t_from}::time, t_to = ${r.t_to}::time,
-          categories = ${pgArr(r.categories)}::text[], item_ids = ${pgArr(r.item_ids)}::bigint[], ends_on = ${r.ends_on}::date, min_spend = ${r.min_spend}, multi = ${r.multi},
+          categories = ${pgArr(r.categories)}::text[], item_ids = ${pgArr(r.item_ids)}::bigint[], ends_on = ${r.ends_on}::date, min_spend = ${r.min_spend}, multi = ${r.multi}, require_clean = ${r.require_clean},
           armed_at = case when active then now() else armed_at end, updated_at = now()
         where id = ${id} returning id`;
       if (!u.length) return bad("not found", 404);
