@@ -10,6 +10,8 @@
 // Secrets: LINE_CHANNEL_ID + LINE_CHANNEL_SECRET (token minted here) or LINE_CHANNEL_ACCESS_TOKEN.
 // verify_jwt = false (the admin key is the guard).
 // v10 (2026-11-20): op member_visits {phone} = one row per visit. v9: members returns dine_visits. v8: pax / med_bowls / med_pax. v7: branch_visits + branch initials. v6: coupon_send takes reward (validReward), usageCondition (≤100, staff check it) and maxUse (1 | -1).
+// v11 (2026-11-20, 0025): coupon rules — reads rules_data; writes template_save, rule_save, rule_toggle, rule_preview
+// (draft rule inside a rolled-back transaction, last 14 days, ignores armed_at), group_save, group_delete.
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -88,6 +90,83 @@ const bad = (msg: string, status = 400) => Response.json({ ok: false, error: msg
 const badField = (field: string, msg: string) => Response.json({ ok: false, error: msg, field }, { status: 400 });
 const log = (actor: string, op: string, detail: unknown) =>
   sql`insert into crm.admin_log (actor, op, detail) values (${actor}, ${op}, ${sql.json(detail as any)})`;
+
+// ---------- coupon rules (0025): templates, criteria rules, hand-picked groups ----------
+const CATS = ["main", "set", "side", "topping", "dessert", "beverage"];
+const HM = /^([01]\d|2[0-3]):[0-5]\d$/;
+const LINE_ID = /^U[0-9a-f]{32}$/;
+const ints = (v: any): number[] => [...new Set((Array.isArray(v) ? v : []).map(Number).filter(Number.isInteger))];
+const pgArr = (a: (number | string)[]) => "{" + a.join(",") + "}";   // values are validated ints / CATS words only
+class Rollback extends Error {}
+
+async function rulesData() {
+  const today = sql`(now() at time zone 'Asia/Bangkok')::date`;
+  const templates = await sql`select t.id::int id, t.title, t.detail, t.start_after_days, t.valid_days, t.ers_hint, t.active,
+      count(c.id)::int issued, count(c.redeemed_at)::int used,
+      count(c.id) filter (where c.redeemed_at is null and c.valid_to < ${today})::int expired
+    from crm.coupon_templates t left join crm.coupons c on c.template_id = t.id
+    group by t.id order by t.active desc, t.id desc`;
+  const rules = await sql`select r.id::int id, r.name, r.template_id::int template_id, r.group_id::int group_id,
+      coalesce(r.branch_ids, '{}') branch_ids, coalesce(r.days, '{}') days,
+      to_char(r.t_from, 'HH24:MI') t_from, to_char(r.t_to, 'HH24:MI') t_to, r.categories, coalesce(r.item_ids, '{}')::int[] item_ids,
+      r.active, to_char(r.armed_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') armed_at, to_char(r.ends_on, 'YYYY-MM-DD') ends_on,
+      count(c.id)::int issued, count(c.redeemed_at)::int used, count(distinct c.line_user_id)::int members
+    from crm.coupon_rules r left join crm.coupons c on c.rule_id = r.id
+    group by r.id order by r.active desc, r.id desc`;
+  const groups = await sql`select g.id::int id, g.name,
+      coalesce(json_agg(json_build_object('id', m.line_user_id, 'name', coalesce(m.full_name, m.display_name), 'phone', m.phone)
+        order by coalesce(m.full_name, m.display_name)) filter (where m.line_user_id is not null), '[]') members
+    from crm.member_groups g left join crm.member_group_members gm on gm.group_id = g.id
+    left join crm.line_members m on m.line_user_id = gm.line_user_id
+    group by g.id order by g.name`;
+  const line_members = await sql`select line_user_id id, coalesce(full_name, display_name) name, phone from crm.line_members
+    where phone is not null and blocked_at is null order by coalesce(full_name, display_name)`;
+  const branches = await sql`select branch_id, name, coalesce(short, left(name, 2)) short from crm.branches
+    where active order by coalesce(short_sort, 100 + sort)`;
+  const menu = await sql`select item_id::int item_id, item_code, name, category from crm.pos_menu order by item_code nulls last, item_id`;
+  return { templates, rules, groups, line_members, branches, menu };
+}
+
+// validate a rule from the page; returns { res } (an error Response) or { r } (clean values)
+async function parseRule(f: any): Promise<{ res?: Response; r?: any }> {
+  const name = String(f.name ?? "").trim();
+  if (name.length < 2 || name.length > 60) return { res: badField("name", "ชื่อกติกา 2–60 ตัวอักษร") };
+  const template_id = Number(f.template_id);
+  const [tp] = Number.isInteger(template_id) ? await sql`select 1 from crm.coupon_templates where id = ${template_id}` : [];
+  if (!tp) return { res: badField("template_id", "เลือกคูปอง") };
+  const group_id = f.group_id == null || f.group_id === "" ? null : Number(f.group_id);
+  if (group_id !== null) {
+    const [g] = Number.isInteger(group_id) ? await sql`select 1 from crm.member_groups where id = ${group_id}` : [];
+    if (!g) return { res: badField("group_id", "ไม่พบกลุ่ม") };
+  }
+  const branch_ids = ints(f.branch_ids);
+  if (branch_ids.length) {
+    const [{ n }] = await sql`select count(*)::int n from crm.branches where branch_id = any(${pgArr(branch_ids)}::int[]) and active`;
+    if (n !== branch_ids.length) return { res: badField("branch_ids", "มีสาขาที่ไม่ถูกต้อง") };
+  }
+  const days = ints(f.days).filter((d) => d >= 1 && d <= 7).sort((a, b) => a - b);
+  const t_from = f.t_from ? String(f.t_from) : null, t_to = f.t_to ? String(f.t_to) : null;
+  if ((t_from === null) !== (t_to === null)) return { res: badField("t_from", "ใส่เวลาเริ่มและเวลาสิ้นสุด") };
+  if (t_from && (!HM.test(t_from) || !HM.test(t_to!) || t_from >= t_to!)) return { res: badField("t_from", "เวลาไม่ถูกต้อง (เริ่มต้องก่อนสิ้นสุด)") };
+  const categories = [...new Set((Array.isArray(f.categories) ? f.categories : []).map(String))].filter((c) => CATS.includes(c));
+  if (!categories.length) return { res: badField("categories", "เลือกอย่างน้อย 1 หมวด") };
+  const item_ids = ints(f.item_ids);
+  if (item_ids.length) {
+    const [{ n }] = await sql`select count(*)::int n from crm.pos_menu
+        where item_id = any(${pgArr(item_ids)}::bigint[]) and category = any(${pgArr(categories)}::text[])`;
+    if (n !== item_ids.length) return { res: badField("item_ids", "มีเมนูที่ไม่อยู่ในหมวดที่เลือก") };
+  }
+  const ends_on = f.ends_on ? String(f.ends_on) : null;
+  if (ends_on && !DAY.test(ends_on)) return { res: badField("ends_on", "วันสิ้นสุดไม่ถูกต้อง") };
+  return { r: { name, template_id, group_id, branch_ids, days, t_from, t_to, categories, item_ids, ends_on } };
+}
+async function insertRule(q: any, r: any): Promise<number> {
+  const [{ id }] = await q`insert into crm.coupon_rules (name, template_id, group_id, branch_ids, days, t_from, t_to, categories, item_ids, ends_on)
+      values (${r.name}, ${r.template_id}, ${r.group_id}, ${pgArr(r.branch_ids)}::int[], ${pgArr(r.days)}::int[],
+              ${r.t_from}::time, ${r.t_to}::time, ${pgArr(r.categories)}::text[], ${pgArr(r.item_ids)}::bigint[], ${r.ends_on}::date)
+      returning id`;
+  return Number(id);
+}
 
 // ---------- audience -> LINE user ids ----------
 async function audienceIds(aud: string): Promise<string[]> {
@@ -232,6 +311,105 @@ async function config() {
 
 // ---------- writes ----------
 async function write(op: string, f: any, actor: string) {
+  if (op === "template_save") {
+    const title = String(f.title ?? "").trim(), detail = String(f.detail ?? "").trim() || null;
+    const hint = String(f.ers_hint ?? "").trim() || null, active = f.active === true;
+    const sa = Number(f.start_after_days), vd = Number(f.valid_days);
+    if (title.length < 2 || title.length > 40) return badField("title", "ชื่อคูปอง 2–40 ตัวอักษร");
+    if (detail && detail.length > 100) return badField("detail", "รายละเอียดยาวเกิน 100 ตัวอักษร");
+    if (!Number.isInteger(sa) || sa < 0 || sa > 30) return badField("start_after_days", "เริ่มใช้ได้หลังบิล 0–30 วัน");
+    if (!Number.isInteger(vd) || vd < 1 || vd > 90) return badField("valid_days", "ใช้ได้ 1–90 วัน");
+    if (hint && hint.length > 60) return badField("ers_hint", "ข้อความ ERS ยาวเกิน 60 ตัวอักษร");
+    let id = f.id ? Number(f.id) : null;
+    if (id) {
+      const u = await sql`update crm.coupon_templates set title = ${title}, detail = ${detail}, start_after_days = ${sa},
+          valid_days = ${vd}, ers_hint = ${hint}, active = ${active}, updated_at = now() where id = ${id} returning id`;
+      if (!u.length) return bad("not found", 404);
+    } else {
+      [{ id }] = await sql`insert into crm.coupon_templates (title, detail, start_after_days, valid_days, ers_hint, active)
+          values (${title}, ${detail}, ${sa}, ${vd}, ${hint}, ${active}) returning id::int id`;
+    }
+    await log(actor, op, { id, title, detail, start_after_days: sa, valid_days: vd, ers_hint: hint, active });
+    return Response.json({ ok: true, id });
+  }
+  if (op === "rule_save") {
+    const p = await parseRule(f);
+    if (p.res) return p.res;
+    const r = p.r;
+    let id = f.id ? Number(f.id) : null;
+    if (id) {
+      // saving a live rule counts bills from now on (no backdating with the new conditions)
+      const u = await sql`update crm.coupon_rules set name = ${r.name}, template_id = ${r.template_id}, group_id = ${r.group_id},
+          branch_ids = ${pgArr(r.branch_ids)}::int[], days = ${pgArr(r.days)}::int[], t_from = ${r.t_from}::time, t_to = ${r.t_to}::time,
+          categories = ${pgArr(r.categories)}::text[], item_ids = ${pgArr(r.item_ids)}::bigint[], ends_on = ${r.ends_on}::date,
+          armed_at = case when active then now() else armed_at end, updated_at = now()
+        where id = ${id} returning id`;
+      if (!u.length) return bad("not found", 404);
+    } else id = await insertRule(sql, r);
+    await log(actor, op, { id, ...r });
+    return Response.json({ ok: true, id });
+  }
+  if (op === "rule_toggle") {
+    const id = Number(f.id), on = f.active === true;
+    const [cur] = await sql`select r.name, t.active tpl_on from crm.coupon_rules r join crm.coupon_templates t on t.id = r.template_id
+        where r.id = ${id}`;
+    if (!cur) return bad("not found", 404);
+    if (on && !cur.tpl_on) return bad("คูปองของกติกานี้ปิดอยู่ เปิดคูปองในแท็บกติกาคูปองก่อน");
+    await sql`update crm.coupon_rules set active = ${on}, armed_at = case when ${on} then now() else armed_at end, updated_at = now()
+        where id = ${id}`;
+    await log(actor, op, { id, name: cur.name, active: on });
+    return Response.json({ ok: true });
+  }
+  if (op === "rule_preview") {
+    const p = await parseRule(f);
+    if (p.res) return p.res;
+    let out: any = { coupons: 0, members: 0 };
+    await sql.begin(async (tx) => {   // the draft rule exists only inside this transaction
+      const id = await insertRule(tx, p.r);
+      [out] = await tx`select coalesce(sum(units), 0)::int coupons, count(distinct line_user_id)::int members
+          from crm.rule_hits(${id}, true)`;
+      throw new Rollback();
+    }).catch((e) => { if (!(e instanceof Rollback)) throw e; });
+    return Response.json({ ok: true, ...out });
+  }
+  if (op === "group_save") {
+    const name = String(f.name ?? "").trim();
+    const ids = [...new Set((Array.isArray(f.members) ? f.members : []).map(String))].filter((x) => LINE_ID.test(x));
+    if (name.length < 2 || name.length > 60) return badField("name", "ชื่อกลุ่ม 2–60 ตัวอักษร");
+    if (ids.length) {
+      const [{ n }] = await sql`select count(*)::int n from crm.line_members
+          where line_user_id = any(${pgArr(ids)}::text[]) and phone is not null`;
+      if (n !== ids.length) return badField("members", "มีสมาชิกที่ไม่ถูกต้อง");
+    }
+    let id = f.id ? Number(f.id) : null;
+    try {
+      await sql.begin(async (tx) => {
+        if (id) {
+          const u = await tx`update crm.member_groups set name = ${name} where id = ${id} returning id`;
+          if (!u.length) throw new Error("group not found");
+        } else {
+          [{ id }] = await tx`insert into crm.member_groups (name) values (${name}) returning id::int id`;
+        }
+        await tx`delete from crm.member_group_members where group_id = ${id}`;
+        if (ids.length) await tx`insert into crm.member_group_members (group_id, line_user_id)
+            select ${id}, unnest(${pgArr(ids)}::text[])`;
+      });
+    } catch (e) {
+      if (String(e).includes("member_groups_name_key")) return badField("name", "มีกลุ่มชื่อนี้แล้ว");
+      throw e;
+    }
+    await log(actor, op, { id, name, members: ids.length });   // count only: LINE ids are personal data
+    return Response.json({ ok: true, id });
+  }
+  if (op === "group_delete") {
+    const id = Number(f.id);
+    const [used] = await sql`select name from crm.coupon_rules where group_id = ${id} limit 1`;
+    if (used) return bad(`กลุ่มนี้ใช้อยู่ในกติกา "${used.name}"`, 409);
+    const [g] = await sql`delete from crm.member_groups where id = ${id} returning name`;
+    if (!g) return bad("not found", 404);
+    await log(actor, op, { id, name: g.name });
+    return Response.json({ ok: true });
+  }
   if (op === "set_setting") {
     const key = String(f.key), value = String(f.value ?? "").trim();
     if (!EDITABLE[key]) return bad("setting not editable");
@@ -379,6 +557,7 @@ Deno.serve(async (req) => {
     if (op === "overview") return Response.json({ ok: true, ...(await overview()) });
     if (op === "members") return Response.json({ ok: true, ...(await members(f)) });
     if (op === "config") return Response.json({ ok: true, ...(await config()) });
+    if (op === "rules_data") return Response.json({ ok: true, ...(await rulesData()) });
     if (op === "member_visits") {   // the detail card's visit list (0024), newest first
       const phone = String(f.phone ?? "");
       if (!PHONE.test(phone)) return bad("เบอร์ไม่ถูกต้อง");
