@@ -12,6 +12,7 @@
 // v10 (2026-11-20): op member_visits {phone} = one row per visit. v9: members returns dine_visits. v8: pax / med_bowls / med_pax. v7: branch_visits + branch initials. v6: coupon_send takes reward (validReward), usageCondition (≤100, staff check it) and maxUse (1 | -1).
 // v11 (2026-11-20, 0025): coupon rules — reads rules_data; writes template_save, rule_save, rule_toggle, rule_preview
 // (draft rule inside a rolled-back transaction, last 14 days, ignores armed_at), group_save, group_delete.
+// v12: template_delete {id, withdraw?} (409 field "withdraw" while copies are still usable on cards), rule_delete {id}.
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -408,6 +409,37 @@ async function write(op: string, f: any, actor: string) {
     const [g] = await sql`delete from crm.member_groups where id = ${id} returning name`;
     if (!g) return bad("not found", 404);
     await log(actor, op, { id, name: g.name });
+    return Response.json({ ok: true });
+  }
+  if (op === "template_delete") {
+    // a coupon with copies still usable on members' cards needs `withdraw` (the page asks first); used / expired copies stay as history
+    const id = Number(f.id);
+    const [tp] = await sql`select title from crm.coupon_templates where id = ${id}`;
+    if (!tp) return bad("not found", 404);
+    const live = sql`template_id = ${id} and redeemed_at is null and valid_to >= (now() at time zone 'Asia/Bangkok')::date`;
+    const [{ n }] = await sql`select count(*)::int n from crm.coupons where ${live}`;
+    if (n > 0 && f.withdraw !== true) return Response.json({ ok: false, error: `ยังมีคูปองนี้บนบัตรสมาชิก ${n} ใบที่ยังใช้ได้`, field: "withdraw", active: n }, { status: 409 });
+    let withdrawn = 0;
+    await sql.begin(async (tx) => {
+      if (n > 0) withdrawn = (await tx`delete from crm.coupons where template_id = ${id} and redeemed_at is null
+          and valid_to >= (now() at time zone 'Asia/Bangkok')::date returning id`).length;
+      await tx`update crm.coupons set template_id = null, rule_id = null
+          where template_id = ${id} or rule_id in (select r.id from crm.coupon_rules r where r.template_id = ${id})`;
+      await tx`delete from crm.coupon_rules where template_id = ${id}`;
+      await tx`delete from crm.coupon_templates where id = ${id}`;
+    });
+    await log(actor, op, { id, title: tp.title, withdrawn });
+    return Response.json({ ok: true, withdrawn });
+  }
+  if (op === "rule_delete") {   // coupons this rule already gave stay on the cards
+    const id = Number(f.id);
+    const [r] = await sql`select name from crm.coupon_rules where id = ${id}`;
+    if (!r) return bad("not found", 404);
+    await sql.begin(async (tx) => {
+      await tx`update crm.coupons set rule_id = null where rule_id = ${id}`;
+      await tx`delete from crm.coupon_rules where id = ${id}`;
+    });
+    await log(actor, op, { id, name: r.name });
     return Response.json({ ok: true });
   }
   if (op === "set_setting") {
