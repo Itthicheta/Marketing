@@ -5,7 +5,7 @@
 // MARKETING_POINTS_KEY). verify_jwt = false. Active rows in crm.test_points are re-applied after each replace. Refuses an empty member list so a bad query can't wipe it.
 // v3 (Point 2026-11-20): optional `stats` (per-phone in-store visit stats) and `promo_uses` (ERS promotions on
 // member bills) replace crm.pos_member_stats / crm.pos_promo_uses (0019) in the same transaction.
-// v4: stats rows carry branch_visits {branch_id: visits} (0021).
+// v4: stats rows carry branch_visits {branch_id: visits} (0021). v6: pax, med_bowls, med_pax (0022).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -40,11 +40,12 @@ Deno.serve(async (req) => {
           first_visit: r.first_visit ?? null, last_visit: r.last_visit ?? null, bowls: Number(r.bowls) || 0,
           spend_thb: Number(r.spend_thb) || 0, addon_units: Number(r.addon_units) || 0, drink_units: Number(r.drink_units) || 0,
           weekend_visits: Number(r.weekend_visits) || 0, slots: (Array.isArray(r.slots) ? r.slots : []).map((x: any) => Number(x) || 0),
+          pax: Number(r.pax) || 0, med_bowls: Number(r.med_bowls) || 0, med_pax: Number(r.med_pax) || 0,
           branch_visits: r.branch_visits && typeof r.branch_visits === "object" ? r.branch_visits : null,   // object, not a string (postgres.js would store a JSON string)
         }));
         for (let i = 0; i < rows.length; i += 500) {
           await tx`insert into crm.pos_member_stats ${tx(rows.slice(i, i + 500), "phone", "visits", "days", "first_visit", "last_visit",
-            "bowls", "spend_thb", "addon_units", "drink_units", "weekend_visits", "slots", "branch_visits")}`;
+            "bowls", "spend_thb", "addon_units", "drink_units", "weekend_visits", "slots", "branch_visits", "pax", "med_bowls", "med_pax")}`;
         }
       }
       if (Array.isArray(promo_uses) && Array.isArray(stats) && stats.length >= 50) {
