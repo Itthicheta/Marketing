@@ -3,13 +3,13 @@
 // Caller: the sales site's Pages Function /api/crm (behind the whole-site login), which adds
 //   x-admin-key  = Pages secret CRM_ADMIN_KEY   (sha256 must equal crm.settings.admin_key_sha256)
 //   x-admin-user = the logged-in user name      (written to crm.admin_log / crm.coupon_sends)
-// One door: POST {op, ...}. Reads: overview, members, config, sends. Writes (all logged): set_setting,
+// One door: POST {op, ...}. Reads: overview, members, member_visits, config, sends. Writes (all logged): set_setting,
 // promo_save, promo_delete, reward_save, test_points_save, test_points_delete, change_phone,
 // coupon_preview, coupon_send. coupon_send needs `expect` = the recipient count the page showed in
 // the preview, so a send never reaches more people than were confirmed.
 // Secrets: LINE_CHANNEL_ID + LINE_CHANNEL_SECRET (token minted here) or LINE_CHANNEL_ACCESS_TOKEN.
 // verify_jwt = false (the admin key is the guard).
-// v9 (2026-11-20): members returns dine_visits. v8: pax / med_bowls / med_pax. v7: branch_visits + branch initials. v6: coupon_send takes reward (validReward), usageCondition (≤100, staff check it) and maxUse (1 | -1).
+// v10 (2026-11-20): op member_visits {phone} = one row per visit. v9: members returns dine_visits. v8: pax / med_bowls / med_pax. v7: branch_visits + branch initials. v6: coupon_send takes reward (validReward), usageCondition (≤100, staff check it) and maxUse (1 | -1).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -379,6 +379,15 @@ Deno.serve(async (req) => {
     if (op === "overview") return Response.json({ ok: true, ...(await overview()) });
     if (op === "members") return Response.json({ ok: true, ...(await members(f)) });
     if (op === "config") return Response.json({ ok: true, ...(await config()) });
+    if (op === "member_visits") {   // the detail card's visit list (0024), newest first
+      const phone = String(f.phone ?? "");
+      if (!PHONE.test(phone)) return bad("เบอร์ไม่ถูกต้อง");
+      const visits = await sql`select bill_no, to_char(at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') at,
+          extract(isodow from at at time zone 'Asia/Bangkok')::int dow, branch_id, channel, bowls::float bowls, pax::float pax,
+          spend::float spend, addon::float addon, drinks::float drinks, items, promos
+        from crm.pos_member_visits where phone = ${phone} order by at desc limit 500`;
+      return Response.json({ ok: true, visits });
+    }
     return await write(op, f, actor);
   } catch (e) {
     console.error("crm-admin", e);
