@@ -9,6 +9,7 @@
 // v9 (2026-11-20, 0025): optional `bills` (14 days of in-store bills with lines + voids_earning) replaces crm.pos_bills /
 // crm.pos_bill_lines, optional `menu` replaces crm.pos_menu; then crm.apply_coupon_rules() issues earned member-card
 // coupons inside a savepoint (a rule error is reported as coupon_error and never blocks the points sync).
+// v10 (0026): bills carry `total` (bill amount incl. VAT) for amount rules.
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -89,7 +90,7 @@ Deno.serve(async (req) => {
           .filter((b: any) => ok(String(b.phone)) && b.order_id && b.opened_at && b.business_date && Number.isInteger(Number(b.branch_id)))
           .map((b: any) => [String(b.order_id), {
             order_id: String(b.order_id), phone: String(b.phone), bill_no: b.bill_no ?? null, branch_id: Number(b.branch_id),
-            opened_at: b.opened_at, business_date: b.business_date,
+            opened_at: b.opened_at, business_date: b.business_date, total: Number(b.total) || 0,
             voids_earning: b.voids_earning !== false,   // fail closed: only an explicit false lets a bill earn
           }])).values()];
         const keep = new Set(bs.map((b) => b.order_id));
@@ -100,7 +101,7 @@ Deno.serve(async (req) => {
             name: l.name ?? null, category: l.category ?? null, qty: Number(l.qty) || 0, full_price: l.full_price === true,
           }]))).values()];
         for (let i = 0; i < bs.length; i += 500) {
-          await tx`insert into crm.pos_bills ${tx(bs.slice(i, i + 500), "order_id", "phone", "bill_no", "branch_id", "opened_at", "business_date", "voids_earning")}`;
+          await tx`insert into crm.pos_bills ${tx(bs.slice(i, i + 500), "order_id", "phone", "bill_no", "branch_id", "opened_at", "business_date", "voids_earning", "total")}`;
         }
         for (let i = 0; i < ls.length; i += 500) {
           await tx`insert into crm.pos_bill_lines ${tx(ls.slice(i, i + 500), "line_id", "order_id", "item_id", "name", "category", "qty", "full_price")}`;
