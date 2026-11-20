@@ -9,7 +9,7 @@
 // the preview, so a send never reaches more people than were confirmed.
 // Secrets: LINE_CHANNEL_ID + LINE_CHANNEL_SECRET (token minted here) or LINE_CHANNEL_ACCESS_TOKEN.
 // verify_jwt = false (the admin key is the guard).
-// v6 (2026-11-20): coupon_send takes reward (validReward), usageCondition (≤100, staff check it) and maxUse (1 | -1).
+// v7 (2026-11-20): members returns branch_visits + branch initials. v6: coupon_send takes reward (validReward), usageCondition (≤100, staff check it) and maxUse (1 | -1).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -187,7 +187,7 @@ async function members(f: any) {
       coalesce(m.signup_source, case when m.phone is not null then 'chat' end) source, m.blocked_at is not null blocked,
       x.points, to_char(x.last_bill_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD') last_bill, lb.name last_branch,
       s.visits, s.days, to_char(s.first_visit, 'YYYY-MM-DD') first_visit, to_char(s.last_visit, 'YYYY-MM-DD') last_visit,
-      s.bowls::float bowls, s.spend_thb::float spend, s.addon_units::float addon, s.drink_units::float drinks, s.weekend_visits, s.slots,
+      s.bowls::float bowls, s.spend_thb::float spend, s.addon_units::float addon, s.drink_units::float drinks, s.weekend_visits, s.slots, s.branch_visits,
       (select json_agg(json_build_object('kind', c.kind, 'title', c.title, 'from', c.valid_from, 'to', c.valid_to,
                'issued', to_char(c.issued_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD'),
                'used', to_char(c.redeemed_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI')) order by c.id)
@@ -207,7 +207,10 @@ async function members(f: any) {
     limit ${ers ? 1000 : 500}`;
   const [st] = await sql`select to_char(max(synced_at) at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') synced,
       to_char(min(first_visit), 'YYYY-MM-DD') since from crm.pos_member_stats`;
-  return { rows, scope: ers ? "ers" : "line", stats_synced: st?.synced ?? null, stats_since: st?.since ?? null };
+  // column heads for visits per branch (0021: initials G, Si, O, SS, AS, R9 in Point's order)
+  const branches = await sql`select branch_id, name, coalesce(short, left(name, 2)) short from crm.branches
+      where active order by coalesce(short_sort, 100 + sort)`;
+  return { rows, branches, scope: ers ? "ers" : "line", stats_synced: st?.synced ?? null, stats_since: st?.since ?? null };
 }
 
 async function config() {
