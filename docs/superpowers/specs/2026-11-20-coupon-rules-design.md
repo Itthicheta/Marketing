@@ -1,6 +1,6 @@
 # Coupon rules + Criteria: auto-earned member-card coupons (design)
 
-Date: 2026-11-20 · Status: design approved in chat by Point; review answers folded in (points bills earn, late coupons get full validity, staff tap marks each coupon used)
+Date: 2026-11-20 · Status: design approved in chat by Point; final: earn only when nothing is applied to the bill (incl. points), coupons never combine with other promotions, late coupons get full validity, staff tap marks each coupon used
 Repos: Marketing (schema, Edge Functions), sales (CRM tabs), Mamapook-data (bill push)
 
 ## Goal
@@ -17,11 +17,11 @@ Each dish earns one "ลด 30% จานหลัก 1 จาน" coupon, valid
 | How many | **1 coupon per qualifying dish (unit), stackable.** A bill with 5 qualifying bowls earns 5 coupons. |
 | Full price only | A bill with **any promotion or discount earns nothing**, including a 2 แถม 1 bill whose other bowls were paid in full. So a visit where coupons are used never earns new ones. |
 | Who | A **hand-picked member list**, or all LINE members. Groups defined by criteria (visits, branch, birthday…) come later, using the same group table. |
-| Points bills | A bill with an ERS points redemption **still earns** for its full-price dishes; the redeemed item doesn't earn. |
+| Points bills | Final (Point 2026-11-20): a bill earns **only if nothing at all is applied to it**. A points redemption cancels earning like any promotion or discount. |
 | Late bills | Validity is normally the day after the bill for 7 days. If a coupon reaches the card late (a branch POS outage), its **full validity starts on the day it arrives**. Bills up to 14 days old are checked. |
 | Not on LINE | **LINE members only.** An ERS customer without a linked LINE account earns nothing; coupons are not held for them. |
 | Tabs | Two new CRM tabs: **Coupon rules** (what the coupon is) and **Criteria** (who earns it, and when). |
-| With other promotions | Each coupon has a **"use with other promotions: yes/no"** setting. It is shown on the card and in the staff confirm step. |
+| With other promotions | **Never.** A coupon is always used on its own (Point 2026-11-20 final). The card and the staff confirm step always show `ใช้ร่วมกับโปรโมชั่นอื่นไม่ได้`; there is no per-coupon setting. |
 
 ## Definitions
 
@@ -30,11 +30,10 @@ Each dish earns one "ลด 30% จานหลัก 1 จาน" coupon, valid
 - **Promotion or discount on a bill (voids earning):** any of
   - an active line with `appliedpromotionid > 0`. 2 แถม 1 free bowls are their own ฿0 lines carrying the promotion id (checked 2026-11-20);
   - any line with a discount (`discountamount + amountdiscount > 0`) or `ispriceoverride`;
-  - a bill-level discount (`pos_t_sale.discountamount > 0`).
+  - a bill-level discount (`pos_t_sale.discountamount > 0`);
+  - a points redemption (`redeemedpoint > 0`).
 
-  These do **not** void a bill:
-  - ฿0 freebies that aren't promotions (free ice H4, empty glass H2, A13);
-  - a **points redemption** (`redeemedpoint > 0`). Point decided 2026-11-20 that full-price dishes on such a bill still earn; the redeemed item itself fails the full-price line check below.
+  ฿0 freebies that aren't promotions (free ice H4, empty glass H2, A13) do **not** void a bill; they simply don't earn (full-price line check below).
 - **Qualifying dish:** an active, non-special line whose `tree_category` is in the rule's categories (main / set / side / topping / dessert / beverage), optionally narrowed to listed ERS item ids. It must also be **charged its full list price**: `initprice > 0` and `extendedprice ≥ initprice × qty`. ฿0 reward items and freebies fail this check. Each unit of qty earns one coupon.
 
 ## Data flow
@@ -63,7 +62,6 @@ crm.coupon_templates (
   detail text,                           -- optional second line, e.g. เฉพาะเมนูจานหลัก ไม่รวมเครื่องดื่ม (≤ 100)
   start_after_days int not null default 1,   -- 1 = valid from the day after the bill
   valid_days int not null default 7,         -- validity length in days, counted from the start day
-  with_promos boolean not null default false,-- can be used together with other promotions
   ers_hint text,                         -- what the cashier keys in ERS, e.g. ส่วนลด "คูปองสมาชิก 30%"
   active boolean not null default true,
   created_at, updated_at timestamptz
@@ -99,8 +97,7 @@ crm.pos_bill_lines (line_id text pk, order_id text → pos_bills, item_id bigint
 -- crm.coupons gains
 alter table crm.coupons
   add column template_id bigint, add column rule_id bigint,
-  add column source_line text, add column unit_no int,
-  add column with_promos boolean, add column detail text;
+  add column source_line text, add column unit_no int, add column detail text;
 -- drop unique (line_user_id, kind); keep one sign-up coupon per member with a partial unique index:
 create unique index coupons_signup_once on crm.coupons (line_user_id) where kind = 'signup';
 create unique index coupons_rule_unit on crm.coupons (rule_id, source_line, unit_no) where rule_id is not null;
@@ -114,7 +111,7 @@ create unique index coupons_rule_unit on crm.coupons (rule_id, source_line, unit
 - the branch, weekday and time window match, and the line is `full_price` and its category (and item id, if listed) qualifies;
 - `valid_from = greatest(business_date + start_after_days, today)` and `valid_to = valid_from + valid_days − 1`. On time, that is the day after the bill; a late arrival starts the day it reaches the card.
 
-It uses `on conflict do nothing` on `coupons_rule_unit`. Title, detail and with_promos are copied from the template at issue time, so editing a template later doesn't rewrite coupons already issued.
+It uses `on conflict do nothing` on `coupons_rule_unit`. Title and detail are copied from the template at issue time, so editing a template later doesn't rewrite coupons already issued.
 
 ## Edge Functions
 
@@ -128,21 +125,21 @@ It uses `on conflict do nothing` on `coupons_rule_unit`. Title, detail and with_
 
   The Members `coupons` json already lists each member's coupons, so earned coupons show there with their rule name.
 - **line-webhook memberCard** (and the copy in line-coupon-send mode "card"):
-  - Coupons with the same template, validity and status are grouped into one box, e.g. `ลด 30% จานหลัก 1 จาน ×5 · ใช้ได้ถึง 27 พ.ย.`. The detail line and `ใช้ร่วมกับโปรโมชั่นอื่นได้` / `ใช้ร่วมกับโปรโมชั่นอื่นไม่ได้` are shown underneath.
+  - Coupons with the same template, validity and status are grouped into one box, e.g. `ลด 30% จานหลัก 1 จาน ×5 · ใช้ได้ถึง 27 พ.ย.`. The detail line and `ใช้ร่วมกับโปรโมชั่นอื่นไม่ได้` are shown underneath.
   - One button per group; each tap uses **one** coupon (the one expiring soonest).
-  - The staff confirm text adds the promotion rule and the ERS hint: `พนักงาน: ยืนยันใช้สิทธิ์ "…" (1 ใบ) ? ใช้ร่วมกับโปรอื่นไม่ได้ · ใส่ส่วนลด "คูปองสมาชิก 30%" ที่ POS`.
+  - The staff confirm text adds the rule and the ERS hint: `พนักงาน: ยืนยันใช้สิทธิ์ "…" (1 ใบ) ? ใช้ร่วมกับโปรอื่นไม่ได้ · ใส่ส่วนลด "คูปองสมาชิก 30%" ที่ POS`.
   - Sign-up coupons render as today.
 - **member-card** (LIFF, later): same grouping when LIFF is switched on.
 
 ## Mac pipeline (Mamapook-data `tools/crm_points_push.py`)
 
-New `BILLS_SQL`: in-store bills with `business_date ≥ today − 14` for customer phones `^0[689]\d{8}$`, with their active, non-special lines (`mp_clean.order_lines`: line_id, itemid, name_th, tree_category, qty, plus `full_price` from base_price_thb / gross_ex_vat_thb) and `voids_earning` computed from `mp_raw.pos_sale_items` (promotion id, discounts, price override) and `mp_raw.pos_t_sale` (bill discount). A points redemption does not set voids_earning. Split-bill duplicate lines are excluded via `mp_metrics.split_dupe_lines`, as in the other CRM queries. Posted as `bills` with the existing payload.
+New `BILLS_SQL`: in-store bills with `business_date ≥ today − 14` for customer phones `^0[689]\d{8}$`, with their active, non-special lines (`mp_clean.order_lines`: line_id, itemid, name_th, tree_category, qty, plus `full_price` from base_price_thb / gross_ex_vat_thb) and `voids_earning` computed from `mp_raw.pos_sale_items` (promotion id, discounts, price override) and `mp_raw.pos_t_sale` (bill discount, redeemedpoint). Split-bill duplicate lines are excluded via `mp_metrics.split_dupe_lines`, as in the other CRM queries. Posted as `bills` with the existing payload.
 
 ## Sales site (CRM area, crm.js)
 
 **Coupon rules tab** (`crm-coupons`)
-- A list of templates showing title, validity ("from day +1, 7 days"), with promotions yes/no, active, and issued / used / expired counts.
-- The form edits: title, detail, start after N days, valid N days, use with other promotions (yes/no), ERS hint, active.
+- A list of templates showing title, validity ("from day +1, 7 days"), active, and issued / used / expired counts.
+- The form edits: title, detail, start after N days, valid N days, ERS hint, active. Every coupon carries the fixed line `ใช้ร่วมกับโปรโมชั่นอื่นไม่ได้`.
 - A live preview of how the coupon box will look on the card.
 
 **Criteria tab** (`crm-criteria`)
@@ -169,10 +166,10 @@ Each tab has TH/EN labels, with key sets checked equal as before.
 - A per-bill cap on coupons used, or a minimum spend.
 - Checking actual coupon use against ERS bills (possible later once the ERS discount exists: count bills with "คูปองสมาชิก" vs card taps).
 
-## Needed from Point
+## From Point
 
-- Create an ERS discount (e.g. "คูปองสมาชิก 30%") for cashiers to key when a coupon is used. It keeps the discount consistent, marks the bill as discounted (so it earns nothing), and lets usage be counted later.
-- Brief staff: the customer gives their phone at the cashier to earn coupons; the card's button uses one coupon per dish.
+- ERS discount button for coupon use: **created** (2026-11-20). Its name goes in each template's ERS hint.
+- Staff briefing: **done** (2026-11-20). Point wants to test first, before any real rule goes on.
 
 ## Testing
 
@@ -185,7 +182,7 @@ Each tab has TH/EN labels, with key sets checked equal as before.
    - a non-group member and a non-LINE phone earning 0;
    - running twice and getting no duplicates;
    - a late bill: the coupon starts on the arrival day with full validity;
-   - a points-redemption bill: its full-price dishes earn, the ฿0 reward line doesn't.
+   - a points-redemption bill earning 0.
 3. Live: a test rule on a test template, group = Point only, at Point's usual branch.
    - Run Preview, then switch it on, then a real full-price bill, then confirm the coupon appears on Point's card at the next sync.
    - Tap to use one coupon and check that the count drops by one.
