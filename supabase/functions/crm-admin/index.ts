@@ -9,7 +9,7 @@
 // the preview, so a send never reaches more people than were confirmed.
 // Secrets: LINE_CHANNEL_ID + LINE_CHANNEL_SECRET (token minted here) or LINE_CHANNEL_ACCESS_TOKEN.
 // verify_jwt = false (the admin key is the guard).
-// v8 (2026-11-20): members returns pax / med_bowls / med_pax. v7: branch_visits + branch initials. v6: coupon_send takes reward (validReward), usageCondition (≤100, staff check it) and maxUse (1 | -1).
+// v9 (2026-11-20): members returns dine_visits. v8: pax / med_bowls / med_pax. v7: branch_visits + branch initials. v6: coupon_send takes reward (validReward), usageCondition (≤100, staff check it) and maxUse (1 | -1).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -188,7 +188,7 @@ async function members(f: any) {
       x.points, to_char(x.last_bill_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD') last_bill, lb.name last_branch,
       s.visits, s.days, to_char(s.first_visit, 'YYYY-MM-DD') first_visit, to_char(s.last_visit, 'YYYY-MM-DD') last_visit,
       s.bowls::float bowls, s.spend_thb::float spend, s.addon_units::float addon, s.drink_units::float drinks, s.weekend_visits, s.slots, s.branch_visits,
-      s.pax::float pax, s.med_bowls::float med_bowls, s.med_pax::float med_pax,
+      s.pax::float pax, s.med_bowls::float med_bowls, s.med_pax::float med_pax, s.dine_visits,
       (select json_agg(json_build_object('kind', c.kind, 'title', c.title, 'from', c.valid_from, 'to', c.valid_to,
                'issued', to_char(c.issued_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD'),
                'used', to_char(c.redeemed_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI')) order by c.id)
