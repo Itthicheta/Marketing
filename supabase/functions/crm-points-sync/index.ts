@@ -6,6 +6,9 @@
 // v3 (Point 2026-11-20): optional `stats` (per-phone in-store visit stats) and `promo_uses` (ERS promotions on
 // member bills) replace crm.pos_member_stats / crm.pos_promo_uses (0019) in the same transaction.
 // v4: stats rows carry branch_visits {branch_id: visits} (0021). v6: pax, med_bowls, med_pax (0022). v7: dine_visits (0023). v8: `visits` (one row per bill) replaces crm.pos_member_visits (0024).
+// v9 (2026-11-20, 0025): optional `bills` (14 days of in-store bills with lines + voids_earning) replaces crm.pos_bills /
+// crm.pos_bill_lines, optional `menu` replaces crm.pos_menu; then crm.apply_coupon_rules() issues earned member-card
+// coupons inside a savepoint (a rule error is reported as coupon_error and never blocks the points sync).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -16,7 +19,8 @@ Deno.serve(async (req) => {
   const [s] = await sql`select value from crm.settings where key = 'points_sync_key'`;
   if (!key || !s?.value || key !== s.value) return new Response("forbidden", { status: 403 });
   try {
-    const { members, rewards, branches, stats, promo_uses, visits } = await req.json();
+    const { members, rewards, branches, stats, promo_uses, visits, bills, menu } = await req.json();
+    let issued: number | null = null, couponError: string | null = null;
     if (!Array.isArray(members) || members.length < 50) throw new Error(`members: got ${members?.length ?? 0}, refusing to replace`);
     const ok = (p: string) => /^0[689]\d{8}$/.test(p);
     const m = members.filter((r: any) => ok(String(r.phone)));
@@ -70,6 +74,44 @@ Deno.serve(async (req) => {
             "bowls", "pax", "spend", "addon", "drinks", "items", "promos")}`;
         }
       }
+      if (Array.isArray(menu) && menu.length) {
+        await tx`delete from crm.pos_menu`;
+        const mr = [...new Map(menu.filter((r: any) => Number.isInteger(Number(r.item_id))).map((r: any) => [Number(r.item_id), {
+          item_id: Number(r.item_id), item_code: r.item_code ?? null, name: r.name ?? null, category: r.category ?? null }])).values()];
+        for (let i = 0; i < mr.length; i += 500) {
+          await tx`insert into crm.pos_menu ${tx(mr.slice(i, i + 500), "item_id", "item_code", "name", "category")}`;
+        }
+      }
+      if (Array.isArray(bills)) {
+        await tx`delete from crm.pos_bill_lines`;
+        await tx`delete from crm.pos_bills`;
+        const bs = [...new Map(bills
+          .filter((b: any) => ok(String(b.phone)) && b.order_id && b.opened_at && b.business_date && Number.isInteger(Number(b.branch_id)))
+          .map((b: any) => [String(b.order_id), {
+            order_id: String(b.order_id), phone: String(b.phone), bill_no: b.bill_no ?? null, branch_id: Number(b.branch_id),
+            opened_at: b.opened_at, business_date: b.business_date,
+            voids_earning: b.voids_earning !== false,   // fail closed: only an explicit false lets a bill earn
+          }])).values()];
+        const keep = new Set(bs.map((b) => b.order_id));
+        const ls = [...new Map(bills.filter((b: any) => keep.has(String(b.order_id))).flatMap((b: any) =>
+          (Array.isArray(b.lines) ? b.lines : []).filter((l: any) => l.line_id).map((l: any) => [String(l.line_id), {
+            line_id: String(l.line_id), order_id: String(b.order_id),
+            item_id: Number.isInteger(Number(l.item_id)) ? Number(l.item_id) : null,
+            name: l.name ?? null, category: l.category ?? null, qty: Number(l.qty) || 0, full_price: l.full_price === true,
+          }]))).values()];
+        for (let i = 0; i < bs.length; i += 500) {
+          await tx`insert into crm.pos_bills ${tx(bs.slice(i, i + 500), "order_id", "phone", "bill_no", "branch_id", "opened_at", "business_date", "voids_earning")}`;
+        }
+        for (let i = 0; i < ls.length; i += 500) {
+          await tx`insert into crm.pos_bill_lines ${tx(ls.slice(i, i + 500), "line_id", "order_id", "item_id", "name", "category", "qty", "full_price")}`;
+        }
+      }
+      try {   // earned member-card coupons (0025); a failure here must not roll back the points sync
+        issued = await tx.savepoint(async (sp) => (await sp`select crm.apply_coupon_rules() n`)[0].n as number);
+      } catch (e) {
+        couponError = String(e).slice(0, 300);
+        console.error("apply_coupon_rules", e);
+      }
       if (Array.isArray(rewards)) {
         await tx`delete from crm.pos_rewards`;
         const rw = rewards.map((r: any) => ({ item_code: String(r.item_code), ers_name: String(r.ers_name), points: Number(r.points) }));
@@ -84,7 +126,9 @@ Deno.serve(async (req) => {
       }
     });
     return Response.json({ ok: true, members: m.length, skipped: members.length - m.length, rewards: rewards?.length ?? 0, branches: branches?.length ?? 0,
-      stats: stats?.length ?? 0, promo_uses: promo_uses?.length ?? 0, visits: visits?.length ?? 0 });
+      stats: stats?.length ?? 0, promo_uses: promo_uses?.length ?? 0, visits: visits?.length ?? 0,
+      bills: Array.isArray(bills) ? bills.length : null, menu: Array.isArray(menu) ? menu.length : null,
+      coupons_issued: issued, coupon_error: couponError });
   } catch (e) {
     console.error("crm-points-sync", e);
     return Response.json({ ok: false, error: String(e) }, { status: 500 });
