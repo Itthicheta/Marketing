@@ -154,26 +154,46 @@ async function overview() {
   return { kpi: k, daily, byBranch, bySource, coupons: cp, taps, form, points: pts, sends, quota: q };
 }
 
+// Point 2026-11-20: every form field + ERS visit stats (crm.pos_member_stats / pos_promo_uses, pushed with the points).
+// scope 'line' = LINE friends / members (default); 'ers' = every phone ERS knows (points or in-store bills), LINE row if any.
 async function members(f: any) {
   const q = String(f.q ?? "").trim();
   const like = "%" + q.replace(/[%_\\]/g, "") + "%";
+  const ers = f.scope === "ers";
+  const base = ers
+    ? sql`select e.phone, m.line_user_id from (select phone from crm.pos_points union select phone from crm.pos_member_stats) e
+          left join crm.line_members m on m.phone = e.phone`
+    : sql`select m.phone, m.line_user_id from crm.line_members m`;
   const rows = await sql`
-    select m.line_user_id id, m.display_name, m.full_name, m.phone, to_char(m.birthday, 'YYYY-MM-DD') birthday,
+    with base as (${base})
+    select coalesce(m.line_user_id, 'tel:' || bs.phone) id, m.line_user_id is not null on_line, m.display_name, m.full_name, bs.phone,
+      to_char(m.birthday, 'YYYY-MM-DD') birthday,
       b.name branch, to_char(m.added_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD') added,
-      to_char(m.linked_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD') linked, m.consent_at is not null consent,
+      to_char(m.linked_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD') linked, m.consent_at is not null consent, m.consent_version,
       coalesce(m.signup_source, case when m.phone is not null then 'chat' end) source, m.blocked_at is not null blocked,
-      x.points, to_char(x.last_bill_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD') last_bill,
+      x.points, to_char(x.last_bill_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD') last_bill, lb.name last_branch,
+      s.visits, s.days, to_char(s.first_visit, 'YYYY-MM-DD') first_visit, to_char(s.last_visit, 'YYYY-MM-DD') last_visit,
+      s.bowls::float bowls, s.spend_thb::float spend, s.addon_units::float addon, s.drink_units::float drinks, s.weekend_visits, s.slots,
       (select json_agg(json_build_object('kind', c.kind, 'title', c.title, 'from', c.valid_from, 'to', c.valid_to,
+               'issued', to_char(c.issued_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD'),
                'used', to_char(c.redeemed_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI')) order by c.id)
          from crm.coupons c where c.line_user_id = m.line_user_id) coupons,
-      exists (select 1 from crm.test_points t where t.phone = m.phone and t.expires_at > now()) test_points
-    from crm.line_members m
+      (select json_agg(json_build_object('at', to_char(u.sold_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI'),
+               'branch', pb.name, 'promo', coalesce(u.promo_name, '#' || u.promo_id), 'items', u.items) order by u.sold_at desc)
+         from crm.pos_promo_uses u left join crm.branches pb on pb.branch_id = u.branch_id where u.phone = bs.phone) promos,
+      exists (select 1 from crm.test_points t where t.phone = bs.phone and t.expires_at > now()) test_points
+    from base bs
+    left join crm.line_members m on m.line_user_id = bs.line_user_id
     left join crm.branches b on b.branch_id = m.branch_id
-    left join crm.pos_points x on x.phone = m.phone
-    where ${q} = '' or m.phone like ${like} or m.full_name ilike ${like} or m.display_name ilike ${like}
-    order by m.linked_at desc nulls last, m.added_at desc
-    limit 500`;
-  return { rows };
+    left join crm.pos_points x on x.phone = bs.phone
+    left join crm.branches lb on lb.branch_id = x.last_branch_id
+    left join crm.pos_member_stats s on s.phone = bs.phone
+    where ${q} = '' or bs.phone like ${like} or m.full_name ilike ${like} or m.display_name ilike ${like}
+    order by ${ers ? sql`s.visits desc nulls last, x.last_bill_at desc nulls last` : sql`m.linked_at desc nulls last, m.added_at desc`}
+    limit ${ers ? 1000 : 500}`;
+  const [st] = await sql`select to_char(max(synced_at) at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') synced,
+      to_char(min(first_visit), 'YYYY-MM-DD') since from crm.pos_member_stats`;
+  return { rows, scope: ers ? "ers" : "line", stats_synced: st?.synced ?? null, stats_since: st?.since ?? null };
 }
 
 async function config() {
