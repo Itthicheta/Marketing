@@ -15,6 +15,8 @@
 // crm.settings (menu_action_card, menu_action_promotions); unmapped ids are logged for re-mapping.
 // Secrets: LINE_CHANNEL_ID, LINE_CHANNEL_SECRET (stateless token minted here) or LINE_CHANNEL_ACCESS_TOKEN.
 // Deploy with verify_jwt = false (signature / one-time token / one-time key are the guards).
+// 2026-11-20 (0025): earned coupons show as one box per stack ("×N") with "ใช้ร่วมกับโปรโมชั่นอื่นไม่ได้";
+// each staff confirm uses exactly one (onRedeemEarned). Sign-up / test coupons unchanged.
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -133,15 +135,18 @@ async function memberCard(userId: string) {
     select coalesce(d.display_name, r.ers_name) name, r.points
     from crm.pos_rewards r left join crm.reward_display d using (item_code)
     where not coalesce(d.hidden, false) order by r.points, name`;
+  // earned coupons (0025) with the same template, title, dates and status show as one box "×N"
   const coupons = await sql`
-    select id, kind, title, to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
-           to_char(redeemed_at at time zone 'Asia/Bangkok','HH24:MI') used_at,
-           case when redeemed_at is not null then 'used' when ${t}::date < valid_from then 'soon' else 'ready' end st
-    from crm.coupons
-    where line_user_id = ${userId}
-      and (redeemed_at is null and valid_to >= ${t}::date
-           or (redeemed_at at time zone 'Asia/Bangkok')::date = ${t}::date)
-    order by valid_from, id`;
+    select min(id) id, min(kind) kind, bool_or(template_id is not null) earned, title, max(detail) detail,
+           to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
+           max(to_char(redeemed_at at time zone 'Asia/Bangkok','HH24:MI')) used_at, st, count(*)::int n
+    from (select *, case when redeemed_at is not null then 'used' when ${t}::date < valid_from then 'soon' else 'ready' end st
+          from crm.coupons
+          where line_user_id = ${userId}
+            and (redeemed_at is null and valid_to >= ${t}::date
+                 or (redeemed_at at time zone 'Asia/Bangkok')::date = ${t}::date)) c
+    group by coalesce(template_id::text, 'c' || id), title, valid_from, valid_to, st
+    order by valid_from, min(id)`;
 
   const body: unknown[] = [
     txt("เบอร์สมาชิก", { size: "sm", color: GREY }),
@@ -181,12 +186,14 @@ async function memberCard(userId: string) {
   for (const c of coupons) {
     const used = c.st === "used", soon = c.st === "soon";
     const contents: unknown[] = [
-      txt(c.title, { weight: "bold", size: "lg", color: used ? GREY : INK, decoration: used ? "line-through" : "none" }),
+      txt(c.n > 1 ? `${c.title} ×${c.n}` : c.title, { weight: "bold", size: "lg", color: used ? GREY : INK, decoration: used ? "line-through" : "none" }),
       txt(used ? `ใช้สิทธิ์แล้ว ${c.used_at} น.`
         : soon ? (c.kind === "signup" ? `ใช้ได้ในการมาครั้งถัดไป ${thDate(c.vf)} ถึง ${thDate(c.vt)}`
                                       : `เริ่มใช้ได้ ${thDate(c.vf)} ถึง ${thDate(c.vt)}`)
         : `ใช้ได้ถึง ${thDate(c.vt)}`, { size: "sm", color: used ? GREEN : GREY }),
     ];
+    if (c.detail) contents.push(txt(c.detail, { size: "xs", color: GREY }));
+    if (c.earned) contents.push(txt("ใช้ร่วมกับโปรโมชั่นอื่นไม่ได้", { size: "xs", color: GREY }));
     if (c.st === "ready") contents.push({
       type: "button", style: "primary", color: RED, height: "sm", margin: "md",
       action: { type: "postback", label: "ใช้สิทธิ์ (สำหรับพนักงาน)", data: `action=redeem&id=${c.id}` },
@@ -290,6 +297,9 @@ async function onMenu(userId: string, replyToken: string, what: "card" | "promot
 
 // Two-step redeem: the button asks for confirmation; only "ยืนยัน" marks the coupon used.
 async function onRedeem(userId: string, replyToken: string, id: number, confirmed: boolean) {
+  const [tap] = await sql`select template_id, title from crm.coupons where id = ${id} and line_user_id = ${userId}`;
+  if (!tap) return;
+  if (tap.template_id != null) return onRedeemEarned(userId, replyToken, id, tap, confirmed);
   const [c] = await sql`
     select title, to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
            to_char(redeemed_at at time zone 'Asia/Bangkok','DD/MM HH24:MI') used_at,
@@ -314,6 +324,35 @@ async function onRedeem(userId: string, replyToken: string, id: number, confirme
     returning to_char(redeemed_at at time zone 'Asia/Bangkok','HH24:MI') at`;
   if (!done.length) return reply(replyToken, "ใช้สิทธิ์ไม่สำเร็จค่ะ กรุณาเปิดบัตรสมาชิกใหม่อีกครั้ง");
   return reply(replyToken, `✅ ใช้สิทธิ์ "${c.title}" เรียบร้อย เวลา ${done[0].at} น.\nพนักงาน: ใส่คูปองในบิลที่ POS ค่ะ`);
+}
+
+// Earned coupons (0025): the card's button stands for a stack of the same coupon. The confirm names one coupon id
+// (the one expiring soonest) and "ยืนยัน" uses exactly that id, so a double tap can never use two.
+async function onRedeemEarned(userId: string, replyToken: string, id: number, tap: any, confirmed: boolean) {
+  const d = bkkDate();
+  const left = async () => (await sql`select count(*)::int n from crm.coupons where line_user_id = ${userId}
+      and template_id = ${tap.template_id} and title = ${tap.title} and redeemed_at is null
+      and ${d}::date between valid_from and valid_to`)[0].n as number;
+  if (confirmed) {
+    const done = await sql`update crm.coupons set redeemed_at = now()
+        where id = ${id} and line_user_id = ${userId} and redeemed_at is null and ${d}::date between valid_from and valid_to
+        returning to_char(redeemed_at at time zone 'Asia/Bangkok','HH24:MI') at`;
+    if (!done.length) return reply(replyToken, `คูปองใบนี้ใช้ไปแล้วหรือหมดอายุแล้วค่ะ (เหลือ ${await left()} ใบ)`);
+    return reply(replyToken, `✅ ใช้สิทธิ์ "${tap.title}" 1 ใบ เวลา ${done[0].at} น. · เหลือ ${await left()} ใบ\nพนักงาน: ใส่ส่วนลดในบิลที่ POS ค่ะ`);
+  }
+  const [c] = await sql`select c.id, tp.ers_hint from crm.coupons c left join crm.coupon_templates tp on tp.id = c.template_id
+      where c.line_user_id = ${userId} and c.template_id = ${tap.template_id} and c.title = ${tap.title}
+        and c.redeemed_at is null and ${d}::date between c.valid_from and c.valid_to
+      order by c.valid_to, c.id limit 1`;
+  if (!c) return reply(replyToken, `วันนี้ไม่มีคูปอง "${tap.title}" ที่ใช้ได้แล้วค่ะ`);
+  const text = `พนักงาน: ยืนยันใช้สิทธิ์ "${tap.title}" 1 ใบ? (มี ${await left()} ใบ)\nใช้ร่วมกับโปรโมชั่นอื่นไม่ได้` +
+    (c.ers_hint ? `\nใส่ ${c.ers_hint} ที่ POS` : "");
+  return send(replyToken, [{
+    type: "template", altText: "ยืนยันใช้สิทธิ์",
+    template: { type: "confirm", text: text.slice(0, 240),
+      actions: [{ type: "postback", label: "ยืนยัน", data: `action=redeem_ok&id=${c.id}` },
+                { type: "postback", label: "ยกเลิก", data: "action=noop" }] },
+  }]);
 }
 
 async function handle(ev: any) {
