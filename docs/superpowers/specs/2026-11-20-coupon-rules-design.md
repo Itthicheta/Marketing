@@ -1,6 +1,6 @@
 # Coupon rules + Criteria: auto-earned member-card coupons (design)
 
-Date: 2026-11-20 · Status: design approved in chat by Point, spec awaiting review
+Date: 2026-11-20 · Status: design approved in chat by Point; review answers folded in (points bills earn, late coupons get full validity, staff tap marks each coupon used)
 Repos: Marketing (schema, Edge Functions), sales (CRM tabs), Mamapook-data (bill push)
 
 ## Goal
@@ -17,6 +17,8 @@ Each dish earns one "ลด 30% จานหลัก 1 จาน" coupon, valid
 | How many | **1 coupon per qualifying dish (unit), stackable.** A bill with 5 qualifying bowls earns 5 coupons. |
 | Full price only | A bill with **any promotion or discount earns nothing**, including a 2 แถม 1 bill whose other bowls were paid in full. So a visit where coupons are used never earns new ones. |
 | Who | A **hand-picked member list**, or all LINE members. Groups defined by criteria (visits, branch, birthday…) come later, using the same group table. |
+| Points bills | A bill with an ERS points redemption **still earns** for its full-price dishes; the redeemed item doesn't earn. |
+| Late bills | Validity is normally the day after the bill for 7 days. If a coupon reaches the card late (a branch POS outage), its **full validity starts on the day it arrives**. Bills up to 14 days old are checked. |
 | Not on LINE | **LINE members only.** An ERS customer without a linked LINE account earns nothing; coupons are not held for them. |
 | Tabs | Two new CRM tabs: **Coupon rules** (what the coupon is) and **Criteria** (who earns it, and when). |
 | With other promotions | Each coupon has a **"use with other promotions: yes/no"** setting. It is shown on the card and in the staff confirm step. |
@@ -28,25 +30,26 @@ Each dish earns one "ลด 30% จานหลัก 1 จาน" coupon, valid
 - **Promotion or discount on a bill (voids earning):** any of
   - an active line with `appliedpromotionid > 0`. 2 แถม 1 free bowls are their own ฿0 lines carrying the promotion id (checked 2026-11-20);
   - any line with a discount (`discountamount + amountdiscount > 0`) or `ispriceoverride`;
-  - a bill-level discount (`pos_t_sale.discountamount > 0`);
-  - a points redemption on the bill (`redeemedpoint > 0`).
+  - a bill-level discount (`pos_t_sale.discountamount > 0`).
 
-  ฿0 freebies that aren't promotions (free ice H4, empty glass H2, A13) do **not** void a bill.
-- **Qualifying dish:** an active, non-special line whose `tree_category` is in the rule's categories (main / set / side / topping / dessert / beverage), optionally narrowed to listed ERS item ids. Each unit of qty earns one coupon.
+  These do **not** void a bill:
+  - ฿0 freebies that aren't promotions (free ice H4, empty glass H2, A13);
+  - a **points redemption** (`redeemedpoint > 0`). Point decided 2026-11-20 that full-price dishes on such a bill still earn; the redeemed item itself fails the full-price line check below.
+- **Qualifying dish:** an active, non-special line whose `tree_category` is in the rule's categories (main / set / side / topping / dessert / beverage), optionally narrowed to listed ERS item ids. It must also be **charged its full list price**: `initprice > 0` and `extendedprice ≥ initprice × qty`. ฿0 reward items and freebies fail this check. Each unit of qty earns one coupon.
 
 ## Data flow
 
 ```
 ERS → Mac pipeline (every ~30 min) ── tools/crm_points_push.py
-        adds `bills`: in-store bills of the last 7 days, with lines + void flag
+        adds `bills`: in-store bills of the last 14 days, with lines + void flag
       → Edge Function crm-points-sync (Marketing)
-        replaces crm.pos_bills / crm.pos_bill_lines (rolling 7 days)
+        replaces crm.pos_bills / crm.pos_bill_lines (rolling 14 days)
         then runs crm.apply_coupon_rules() in the same transaction
       → crm.coupons (member card)
 ```
 
 - **Rules live in the Marketing database** and are edited in the CRM tabs. The Mac never needs to know about them.
-- **Latency:** a coupon is issued within ~30–60 min of the bill reaching HQ. Branch POS uploads can lag, so check `branch_sync_status` before calling a coupon missing. If a bill arrives so late that the coupon's whole validity window has passed, the coupon is not issued.
+- **Latency:** branches are normally 1–1.5 h behind (branch_sync_status, 2026-11-20), so a coupon reaches the card within ~2 h of the bill. Branch POS uploads can stall, so check `branch_sync_status` before calling a coupon missing. A late coupon still gets its full validity, starting the day it arrives. A bill more than 14 days late is outside the window and earns nothing.
 - **Idempotent:** a coupon is keyed by (rule, bill line, unit number). Re-running a sync, or the same bill appearing in several syncs, never issues a duplicate.
 - **No backdating:** a rule only counts bills opened at or after the moment it was last switched on (`armed_at`).
 
@@ -87,11 +90,11 @@ crm.coupon_rules (
   created_at, updated_at
 )
 
--- rolling 7-day bill copy pushed by the Mac (replaced every sync)
+-- rolling 14-day bill copy pushed by the Mac (replaced every sync)
 crm.pos_bills (order_id text pk, phone text, bill_no text, branch_id int, opened_at timestamptz,
                business_date date, voids_earning boolean not null)
 crm.pos_bill_lines (line_id text pk, order_id text → pos_bills, item_id bigint, name text,
-                    category text, qty numeric)
+                    category text, qty numeric, full_price boolean not null)   -- initprice > 0 and extendedprice ≥ initprice × qty
 
 -- crm.coupons gains
 alter table crm.coupons
@@ -108,19 +111,19 @@ create unique index coupons_rule_unit on crm.coupons (rule_id, source_line, unit
 
 - the bill is in `pos_bills`, `not voids_earning`, and `opened_at ≥ armed_at`;
 - the bill's phone belongs to a LINE member (`crm.line_members.phone`) who is in the rule's group, or is any LINE member when there is no group;
-- the branch, weekday and time window match, and the line's category (and item id, if listed) qualifies;
-- `valid_to = business_date + start_after_days + valid_days − 1` and `valid_to ≥ today`.
+- the branch, weekday and time window match, and the line is `full_price` and its category (and item id, if listed) qualifies;
+- `valid_from = greatest(business_date + start_after_days, today)` and `valid_to = valid_from + valid_days − 1`. On time, that is the day after the bill; a late arrival starts the day it reaches the card.
 
 It uses `on conflict do nothing` on `coupons_rule_unit`. Title, detail and with_promos are copied from the template at issue time, so editing a template later doesn't rewrite coupons already issued.
 
 ## Edge Functions
 
-- **crm-points-sync v9:** accepts `bills: [{order_id, phone, bill_no, branch_id, opened_at, business_date, voids_earning, lines: [{line_id, item_id, name, category, qty}]}]`. It replaces pos_bills / pos_bill_lines and calls `crm.apply_coupon_rules()` in the same transaction. Guards: it only replaces when `bills` is an array; an empty array is allowed (a quiet week); a missing key leaves the tables untouched. The response adds `bills` and `coupons_issued`.
+- **crm-points-sync v9:** accepts `bills: [{order_id, phone, bill_no, branch_id, opened_at, business_date, voids_earning, lines: [{line_id, item_id, name, category, qty, full_price}]}]`. It replaces pos_bills / pos_bill_lines and calls `crm.apply_coupon_rules()` in the same transaction. Guards: it only replaces when `bills` is an array; an empty array is allowed (a quiet week); a missing key leaves the tables untouched. The response adds `bills` and `coupons_issued`.
 - **crm-admin v11**, new ops (every change logged in admin_log):
   - `templates` / `template_save`;
   - `groups` / `group_save` (name + member list) / `group_members`;
   - `rules` / `rule_save` (switching a rule on sets armed_at = now());
-  - `rule_preview {rule}`: for a draft rule, how many coupons and members it *would* have produced from the bills currently in pos_bills, ignoring armed_at. Nothing is written;
+  - `rule_preview {rule}`: for a draft rule, how many coupons and members it *would* have produced from the bills currently in pos_bills (last 14 days), ignoring armed_at. Nothing is written;
   - `rule_stats`: per rule, coupons issued / used / expired / active, and members reached.
 
   The Members `coupons` json already lists each member's coupons, so earned coupons show there with their rule name.
@@ -133,7 +136,7 @@ It uses `on conflict do nothing` on `coupons_rule_unit`. Title, detail and with_
 
 ## Mac pipeline (Mamapook-data `tools/crm_points_push.py`)
 
-New `BILLS_SQL`: in-store bills with `business_date ≥ today − 7` for customer phones `^0[689]\d{8}$`, with their active, non-special lines (`mp_clean.order_lines`: line_id, itemid, name_th, tree_category, qty) and `voids_earning` computed from `mp_raw.pos_sale_items` (promotion id, discounts, price override) and `mp_raw.pos_t_sale` (bill discount, redeemedpoint). Split-bill duplicate lines are excluded via `mp_metrics.split_dupe_lines`, as in the other CRM queries. Posted as `bills` with the existing payload.
+New `BILLS_SQL`: in-store bills with `business_date ≥ today − 14` for customer phones `^0[689]\d{8}$`, with their active, non-special lines (`mp_clean.order_lines`: line_id, itemid, name_th, tree_category, qty, plus `full_price` from base_price_thb / gross_ex_vat_thb) and `voids_earning` computed from `mp_raw.pos_sale_items` (promotion id, discounts, price override) and `mp_raw.pos_t_sale` (bill discount). A points redemption does not set voids_earning. Split-bill duplicate lines are excluded via `mp_metrics.split_dupe_lines`, as in the other CRM queries. Posted as `bills` with the existing payload.
 
 ## Sales site (CRM area, crm.js)
 
@@ -153,7 +156,7 @@ New `BILLS_SQL`: in-store bills with `business_date ≥ today − 7` for custome
   - dish categories (chips) plus optional items (search the menu);
   - an optional end date;
   - on/off.
-- **Preview** button: "the last 7 days would have given N coupons to M members". Switching a rule on asks for confirmation and states that only bills from now on count.
+- **Preview** button: "the last 14 days would have given N coupons to M members". Switching a rule on asks for confirmation and states that only bills from now on count.
 - **Groups** section: create or rename a list, and add members by searching LINE members (name / phone) or removing them.
 
 Each tab has TH/EN labels, with key sets checked equal as before.
@@ -181,7 +184,8 @@ Each tab has TH/EN labels, with key sets checked equal as before.
    - a wrong branch, wrong time, or bill before armed_at earning 0;
    - a non-group member and a non-LINE phone earning 0;
    - running twice and getting no duplicates;
-   - a late bill whose window has passed earning 0.
+   - a late bill: the coupon starts on the arrival day with full validity;
+   - a points-redemption bill: its full-price dishes earn, the ฿0 reward line doesn't.
 3. Live: a test rule on a test template, group = Point only, at Point's usual branch.
    - Run Preview, then switch it on, then a real full-price bill, then confirm the coupon appears on Point's card at the next sync.
    - Tap to use one coupon and check that the count drops by one.
