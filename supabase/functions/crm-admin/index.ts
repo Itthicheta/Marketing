@@ -9,6 +9,7 @@
 // the preview, so a send never reaches more people than were confirmed.
 // Secrets: LINE_CHANNEL_ID + LINE_CHANNEL_SECRET (token minted here) or LINE_CHANNEL_ACCESS_TOKEN.
 // verify_jwt = false (the admin key is the guard).
+// v6 (2026-11-20): coupon_send takes reward (validReward), usageCondition (≤100, staff check it) and maxUse (1 | -1).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -41,6 +42,19 @@ function validStyle(v: string): boolean {
   return Object.keys(o).every((k) => ok[k] && ok[k](o[k]));
 }
 const PHONE = /^0[689]\d{8}$/;
+// LINE coupon reward (2026-11-20): free / gift / others, or a discount: fixed ฿, percentage 1–99, or explicit (was → now)
+function validReward(r: any): any {
+  const pos = (x: any) => Number.isInteger(x) && x > 0;
+  if (!r || typeof r !== "object") return { type: "free" };
+  if (["free", "gift", "others"].includes(r.type)) return { type: r.type };
+  if (r.type !== "discount" || !r.priceInfo) return null;
+  const p = r.priceInfo;
+  if (p.type === "fixed" && pos(p.fixedAmount)) return { type: "discount", priceInfo: { type: "fixed", fixedAmount: p.fixedAmount } };
+  if (p.type === "percentage" && pos(p.percentage) && p.percentage <= 99) return { type: "discount", priceInfo: { type: "percentage", percentage: p.percentage } };
+  if (p.type === "explicit" && pos(p.originalPrice) && pos(p.priceAfterDiscount) && p.priceAfterDiscount < p.originalPrice)
+    return { type: "discount", priceInfo: { type: "explicit", originalPrice: p.originalPrice, priceAfterDiscount: p.priceAfterDiscount } };
+  return null;
+}
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 async function token(): Promise<string> {
@@ -148,7 +162,7 @@ async function overview() {
                 when x.points < 50 then '20-49' else '50+' end b, count(*)::int n
     from crm.line_members m join crm.pos_points x using (phone) where m.blocked_at is null group by 1`;
   const sends = await sql`select id, to_char(at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') at, actor, title,
-      audience, recipients, error from crm.coupon_sends order by id desc limit 10`;
+      audience, recipients, error, reward, usage_condition, max_use from crm.coupon_sends order by id desc limit 10`;
   let q = null;
   try { q = await quota(await token()); } catch (_) { q = null; }
   return { kpi: k, daily, byBranch, bySource, coupons: cp, taps, form, points: pts, sends, quota: q };
@@ -310,17 +324,23 @@ async function write(op: string, f: any, actor: string) {
     const c = f.coupon ?? {};
     const title = String(c.title ?? "").trim(), desc = String(c.description ?? "").trim();
     const start = Date.parse(String(c.start ?? "")), end = Date.parse(String(c.end ?? ""));
-    const reward = c.reward ?? { type: "free" };
+    const reward = validReward(c.reward);
+    const cond = String(c.usageCondition ?? "").trim(), maxUse = c.maxUse === -1 ? -1 : 1;
+    if (!reward) return bad("รางวัลไม่ถูกต้อง");
+    if (cond.length > 100) return bad("เงื่อนไขยาวเกิน 100 ตัวอักษร");
     if (Number(f.expect) !== ids.length) return bad(`จำนวนผู้รับเปลี่ยนเป็น ${ids.length} คน กรุณาดูตัวอย่างอีกครั้ง`, 409);
     if (!ids.length) return bad("ไม่มีผู้รับ");
     if (title.length < 2 || title.length > 60) return bad("ชื่อคูปอง 2–60 ตัวอักษร");
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end < Date.now()) return bad("วันเวลาไม่ถูกต้อง");
     if (q.limit !== null && q.used + ids.length > q.limit) return bad(`โควตาไม่พอ: เหลือ ${q.limit - q.used} ข้อความ`);
-    const [{ id: sendId }] = await sql`insert into crm.coupon_sends (actor, title, audience, recipients, valid_from, valid_to, quota_before)
-        values (${actor}, ${title}, ${aud}, ${ids.length}, ${new Date(start)}, ${new Date(end)}, ${q.used}) returning id`;
+    const [{ id: sendId }] = await sql`insert into crm.coupon_sends (actor, title, audience, recipients, valid_from, valid_to, quota_before,
+          reward, usage_condition, max_use)
+        values (${actor}, ${title}, ${aud}, ${ids.length}, ${new Date(start)}, ${new Date(end)}, ${q.used},
+          ${sql.json(reward)}, ${cond || null}, ${maxUse}) returning id`;
     try {
       const { couponId } = await line(tok, "/coupon", {
-        title, description: desc || undefined, acquisitionCondition: { type: "normal" }, maxUseCountPerTicket: 1,
+        title, description: desc || undefined, acquisitionCondition: { type: "normal" }, maxUseCountPerTicket: maxUse,
+        ...(cond ? { usageCondition: cond } : {}),
         startTimestamp: Math.floor(start / 1000), endTimestamp: Math.floor(end / 1000), timezone: "ASIA_BANGKOK",
         reward, visibility: "UNLISTED", ...(c.imageUrl ? { imageUrl: String(c.imageUrl) } : {}),
       });
@@ -333,7 +353,7 @@ async function write(op: string, f: any, actor: string) {
       }
       const after = await quota(tok).catch(() => null);
       await sql`update crm.coupon_sends set quota_after = ${after?.used ?? null} where id = ${sendId}`;
-      await log(actor, op, { send_id: sendId, title, audience: aud, recipients: ids.length, coupon_id: couponId });
+      await log(actor, op, { send_id: sendId, title, audience: aud, recipients: ids.length, coupon_id: couponId, reward, usage_condition: cond || null, max_use: maxUse });
       return Response.json({ ok: true, send_id: sendId, recipients: ids.length, coupon_id: couponId, quota: after });
     } catch (e) {
       await sql`update crm.coupon_sends set error = ${String(e).slice(0, 500)} where id = ${sendId}`;
