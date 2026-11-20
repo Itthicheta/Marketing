@@ -98,10 +98,13 @@ crm.pos_bill_lines (line_id text pk, order_id text → pos_bills, item_id bigint
 alter table crm.coupons
   add column template_id bigint, add column rule_id bigint,
   add column source_line text, add column unit_no int, add column detail text;
--- drop unique (line_user_id, kind); keep one sign-up coupon per member with a partial unique index:
-create unique index coupons_signup_once on crm.coupons (line_user_id) where kind = 'signup';
 create unique index coupons_rule_unit on crm.coupons (rule_id, source_line, unit_no) where rule_id is not null;
--- kind = 'rule' for earned coupons
+-- Earned coupons use kind = 'rule:<rule_id>:<line_id>:<unit_no>' (unique per coupon). So the existing
+-- unique (line_user_id, kind), which keeps one sign-up coupon per member, stays as is and never blocks them.
+-- The sign-up insert (on conflict (line_user_id, kind)) is untouched.
+
+-- menu for the Criteria item picker, pushed by the Mac (replaced every sync)
+crm.pos_menu (item_id bigint pk, item_code text, name text, category text)
 ```
 
 `crm.apply_coupon_rules()` is a plpgsql function that returns the number of coupons issued. For every active rule (with `ends_on` null or ≥ the bill date), it inserts one coupon per unit where:
@@ -115,7 +118,7 @@ It uses `on conflict do nothing` on `coupons_rule_unit`. Title and detail are co
 
 ## Edge Functions
 
-- **crm-points-sync v9:** accepts `bills: [{order_id, phone, bill_no, branch_id, opened_at, business_date, voids_earning, lines: [{line_id, item_id, name, category, qty, full_price}]}]`. It replaces pos_bills / pos_bill_lines and calls `crm.apply_coupon_rules()` in the same transaction. Guards: it only replaces when `bills` is an array; an empty array is allowed (a quiet week); a missing key leaves the tables untouched. The response adds `bills` and `coupons_issued`.
+- **crm-points-sync v9:** also accepts `menu: [{item_id, item_code, name, category}]` (replaces crm.pos_menu when non-empty). Accepts `bills: [{order_id, phone, bill_no, branch_id, opened_at, business_date, voids_earning, lines: [{line_id, item_id, name, category, qty, full_price}]}]`. It replaces pos_bills / pos_bill_lines and calls `crm.apply_coupon_rules()` in the same transaction. Guards: it only replaces when `bills` is an array; an empty array is allowed (a quiet week); a missing key leaves the tables untouched. The response adds `bills` and `coupons_issued`.
 - **crm-admin v11**, new ops (every change logged in admin_log):
   - `templates` / `template_save`;
   - `groups` / `group_save` (name + member list) / `group_members`;
@@ -124,7 +127,7 @@ It uses `on conflict do nothing` on `coupons_rule_unit`. Title and detail are co
   - `rule_stats`: per rule, coupons issued / used / expired / active, and members reached.
 
   The Members `coupons` json already lists each member's coupons, so earned coupons show there with their rule name.
-- **line-webhook memberCard** (and the copy in line-coupon-send mode "card"):
+- **line-webhook memberCard** (the only copy; the admin push mode "card" calls the same function):
   - Coupons with the same template, validity and status are grouped into one box, e.g. `ลด 30% จานหลัก 1 จาน ×5 · ใช้ได้ถึง 27 พ.ย.`. The detail line and `ใช้ร่วมกับโปรโมชั่นอื่นไม่ได้` are shown underneath.
   - One button per group; each tap uses **one** coupon (the one expiring soonest).
   - The staff confirm text adds the rule and the ERS hint: `พนักงาน: ยืนยันใช้สิทธิ์ "…" (1 ใบ) ? ใช้ร่วมกับโปรอื่นไม่ได้ · ใส่ส่วนลด "คูปองสมาชิก 30%" ที่ POS`.
@@ -159,6 +162,8 @@ New `BILLS_SQL`: in-store bills with `business_date ≥ today − 14` for custom
 Each tab has TH/EN labels, with key sets checked equal as before.
 
 ## Not in v1
+
+- Taking back a coupon whose bill is voided after the coupon was issued. The coupon stays; this is rare.
 
 - Criteria-based groups (the table is ready via `member_groups.kind`).
 - Holding coupons for non-LINE customers.
