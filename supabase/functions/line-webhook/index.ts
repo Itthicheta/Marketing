@@ -17,6 +17,7 @@
 // Deploy with verify_jwt = false (signature / one-time token / one-time key are the guards).
 // 2026-11-20 (0025): earned coupons show as one box per stack ("×N") with "ใช้ร่วมกับโปรโมชั่นอื่นไม่ได้";
 // each staff confirm uses exactly one (onRedeemEarned). Sign-up / test coupons unchanged.
+// 2026-11-23: a confirm dies when its ยกเลิก is pressed or after 10 minutes (confirmDead).
 // 2026-11-23: card has two headed sections (แลกแต้ม / คูปองของฉัน) with dividers; the confirm's ยกเลิก now answers.
 import postgres from "npm:postgres@3.4.5";
 
@@ -303,6 +304,23 @@ async function onMenu(userId: string, replyToken: string, what: "card" | "promot
   return send(replyToken, what === "register" ? [{ type: "text", text: MSG.already }, card] : [card]);
 }
 
+// LINE cannot remove buttons from a message already in the chat, so the server decides whether a confirm is still
+// good (Point 2026-11-23): its two buttons carry the same time stamp; ยืนยัน is refused once that confirm's ยกเลิก was
+// pressed (every postback is in raw.line_events) or after 10 minutes. Confirms without a stamp (older ones) are dead.
+const CONFIRM_MS = 10 * 60e3;
+function confirmActions(id: number | string) {
+  const ts = Date.now();
+  return [{ type: "postback", label: "ยืนยัน", data: `action=redeem_ok&id=${id}&ts=${ts}` },
+          { type: "postback", label: "ยกเลิก", data: `action=cancel&id=${id}&ts=${ts}` }];
+}
+async function confirmDead(userId: string, id: number, ts: number): Promise<string | null> {
+  if (!Number.isFinite(ts) || ts <= 0 || Date.now() - ts > CONFIRM_MS)
+    return "หมดเวลายืนยันแล้วค่ะ ยังไม่ได้ใช้สิทธิ์ กรุณากดปุ่ม \"ใช้สิทธิ์\" บนบัตรสมาชิกอีกครั้ง";
+  const [c] = await sql`select 1 from raw.line_events where line_user_id = ${userId} and event_type = 'postback'
+      and payload->'postback'->>'data' = ${`action=cancel&id=${id}&ts=${ts}`} limit 1`;
+  return c ? "รายการนี้กดยกเลิกไปแล้วค่ะ ยังไม่ได้ใช้สิทธิ์ หากต้องการใช้ กรุณากดปุ่ม \"ใช้สิทธิ์\" บนบัตรสมาชิกอีกครั้ง" : null;
+}
+
 // Two-step redeem: the button asks for confirmation; only "ยืนยัน" marks the coupon used.
 async function onRedeem(userId: string, replyToken: string, id: number, confirmed: boolean) {
   const [tap] = await sql`select template_id, title from crm.coupons where id = ${id} and line_user_id = ${userId}`;
@@ -321,8 +339,7 @@ async function onRedeem(userId: string, replyToken: string, id: number, confirme
     return send(replyToken, [{
       type: "template", altText: "ยืนยันใช้สิทธิ์",
       template: { type: "confirm", text: `พนักงาน: ยืนยันใช้สิทธิ์ "${c.title}" ?\nแล้วใส่คูปองในบิลที่ POS`,
-        actions: [{ type: "postback", label: "ยืนยัน", data: `action=redeem_ok&id=${id}` },
-                  { type: "postback", label: "ยกเลิก", data: "action=noop" }] },
+        actions: confirmActions(id) },
     }]);
   }
   const done = await sql`
@@ -358,8 +375,7 @@ async function onRedeemEarned(userId: string, replyToken: string, id: number, ta
   return send(replyToken, [{
     type: "template", altText: "ยืนยันใช้สิทธิ์",
     template: { type: "confirm", text: text.slice(0, 240),
-      actions: [{ type: "postback", label: "ยืนยัน", data: `action=redeem_ok&id=${c.id}` },
-                { type: "postback", label: "ยกเลิก", data: "action=noop" }] },
+      actions: confirmActions(c.id) },
   }]);
 }
 
@@ -391,8 +407,12 @@ async function handle(ev: any) {
     const action = q.get("action");
     if (action === "card" || action === "register") return onMenu(userId, ev.replyToken, action);
     if (action === "promotions" || action === "coupons") return onMenu(userId, ev.replyToken, "promotions");
+    if (action === "redeem_ok") {
+      const dead = await confirmDead(userId, Number(q.get("id")), Number(q.get("ts")));
+      if (dead) return reply(ev.replyToken, dead);
+    }
     if (action === "redeem" || action === "redeem_ok") return onRedeem(userId, ev.replyToken, Number(q.get("id")), action === "redeem_ok");
-    if (action === "noop") return reply(ev.replyToken, "ยกเลิกแล้วค่ะ ยังไม่ได้ใช้สิทธิ์ คูปองยังอยู่ในบัตรสมาชิกเหมือนเดิม");   // the confirm's ยกเลิก
+    if (action === "noop" || action === "cancel") return reply(ev.replyToken, "ยกเลิกแล้วค่ะ ยังไม่ได้ใช้สิทธิ์ คูปองยังอยู่ในบัตรสมาชิกเหมือนเดิม");   // the confirm's ยกเลิก
     return;
   }
   if (ev.type === "message" && ev.message?.type === "text") {
