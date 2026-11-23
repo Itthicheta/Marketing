@@ -17,6 +17,7 @@
 // Deploy with verify_jwt = false (signature / one-time token / one-time key are the guards).
 // 2026-11-20 (0025): earned coupons show as one box per stack ("×N") with "ใช้ร่วมกับโปรโมชั่นอื่นไม่ได้";
 // each staff confirm uses exactly one (onRedeemEarned). Sign-up / test coupons unchanged.
+// 2026-11-23: card has two headed sections (แลกแต้ม / คูปองของฉัน) with dividers; the confirm's ยกเลิก now answers.
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -168,7 +169,10 @@ async function memberCard(userId: string) {
     );
   }
   if (rewards.length) {
-    body.push(txt("ของรางวัล · แลกที่แคชเชียร์", { size: "sm", color: GREY, margin: "lg" }));
+    // section 1 of 2 (Point 2026-11-23): point rewards, clearly apart from the coupons below
+    body.push({ type: "separator", margin: "xl" },
+      txt("แลกแต้ม", { size: "md", weight: "bold", color: INK, margin: "lg" }),
+      txt("ของรางวัลจากแต้มสะสม · แลกที่แคชเชียร์", { size: "xs", color: GREY }));
     for (const r of rewards) {
       const cost = Number(r.points), ok = balance !== null && balance >= cost;
       body.push({
@@ -183,6 +187,10 @@ async function memberCard(userId: string) {
       });
     }
   }
+  // section 2 of 2: coupons on the card
+  if (coupons.length) body.push({ type: "separator", margin: "xl" },
+    txt("คูปองของฉัน", { size: "md", weight: "bold", color: INK, margin: "lg" }),
+    txt("ให้พนักงานกดใช้สิทธิ์ที่แคชเชียร์", { size: "xs", color: GREY }));
   for (const c of coupons) {
     const used = c.st === "used", soon = c.st === "soon";
     const contents: unknown[] = [
@@ -384,6 +392,7 @@ async function handle(ev: any) {
     if (action === "card" || action === "register") return onMenu(userId, ev.replyToken, action);
     if (action === "promotions" || action === "coupons") return onMenu(userId, ev.replyToken, "promotions");
     if (action === "redeem" || action === "redeem_ok") return onRedeem(userId, ev.replyToken, Number(q.get("id")), action === "redeem_ok");
+    if (action === "noop") return reply(ev.replyToken, "ยกเลิกแล้วค่ะ ยังไม่ได้ใช้สิทธิ์ คูปองยังอยู่ในบัตรสมาชิกเหมือนเดิม");   // the confirm's ยกเลิก
     return;
   }
   if (ev.type === "message" && ev.message?.type === "text") {
