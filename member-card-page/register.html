@@ -25,6 +25,9 @@
   .err { color:var(--red); font-size:14px; margin-top:12px; min-height:20px; }
   .done { text-align:center; padding:40px 10px; } .done h2 { margin:0 0 10px; }
   .hint { color:var(--grey); font-size:12px; margin-top:4px; }
+  .req { color:var(--red); }
+  .bad { border-color:var(--red) !important; }
+  .need { color:var(--grey); font-size:13px; margin-top:10px; min-height:18px; text-align:center; }
 </style></head>
 <body>
 <header><h1>สมัครสมาชิก Mama Pook</h1><p id="sub">สะสมแต้ม 100 บาท = 1 แต้ม เพื่อแลกของฟรี</p></header>
@@ -43,26 +46,59 @@ async function start() {
   if (d.reward) document.getElementById("sub").textContent = `รับฟรี ${d.reward} ในการมาครั้งถัดไป`;
   const m = d.member, today = new Date().toISOString().slice(0, 10);
   main.innerHTML = `
-    <label for="name">ชื่อ-นามสกุล</label>
+    <label for="name">ชื่อ-นามสกุล <span class="req">*</span></label>
     <input id="name" autocomplete="name" maxlength="100" value="${esc(m.full_name)}">
-    <label for="bday">วันเกิด</label>
+    <label for="bday">วันเกิด <span class="req">*</span></label>
     <input id="bday" type="date" min="1920-01-01" max="${today}" value="${esc(m.birthday || "")}">
-    <label for="branch">สาขาที่ไปบ่อย</label>
+    <label for="branch">สาขาที่ไปบ่อย <span class="req">*</span></label>
     <select id="branch"><option value="">เลือกสาขา</option>${d.branches.map(b =>
       `<option value="${b.id}" ${b.id === m.branch_id ? "selected" : ""}>${esc(b.name)}</option>`).join("")}</select>
-    <label for="phone">เบอร์โทรศัพท์</label>
+    <label for="phone">เบอร์โทรศัพท์ <span class="req">*</span></label>
     <input id="phone" type="tel" inputmode="numeric" maxlength="12" placeholder="0812345678" value="${esc(m.phone || "")}" ${m.phone ? "readonly" : ""}>
     <div class="hint">${m.phone ? "เปลี่ยนเบอร์ได้ที่พนักงานหน้าร้านค่ะ" : "ใช้เบอร์นี้สะสมแต้มที่แคชเชียร์ทุกครั้ง"}</div>
-    <div class="consent"><input id="consent" type="checkbox">
+    <div class="consent" id="consentbox"><input id="consent" type="checkbox">
       <span>ข้าพเจ้ายินยอมให้ Mama Pook เก็บและใช้ชื่อ วันเกิด สาขา และเบอร์โทรศัพท์ของข้าพเจ้า เพื่อให้บริการสมาชิก
       สะสมและแลกแต้ม และส่งสิทธิพิเศษหรือโปรโมชั่นทาง LINE ข้าพเจ้าขอแก้ไขหรือยกเลิกได้ทุกเมื่อ โดยแจ้งพนักงานหรือทักแชต LINE นี้</span></div>
-    <button id="go">สมัครสมาชิก</button>
+    <button id="go" disabled>สมัครสมาชิก</button>
+    <div class="need" id="need"></div>
     <div class="err" id="err"></div>`;
   document.getElementById("go").onclick = submit;
+  // every field is required (Point 2026-11-23): the button stays off until all five are filled in correctly
+  for (const id of ["name", "bday", "branch", "phone", "consent"]) {
+    const el = document.getElementById(id);
+    el.addEventListener("input", () => { el.dataset.touched = "1"; check(); });
+    el.addEventListener("change", () => { el.dataset.touched = "1"; check(); });
+    el.addEventListener("blur", () => { el.dataset.touched = "1"; check(); });
+  }
+  check();
+}
+
+// same rules as the server (line-webhook /signup); returns the list of fields still missing
+function check() {
+  const v = id => document.getElementById(id);
+  const digits = v("phone").value.replace(/[\s\-.()+]/g, "").replace(/^66(?=\d{9}$)/, "0");
+  const today = new Date(Date.now() + 7 * 3600e3), limit = new Date(today.getTime() - 365 * 5 * 86400e3).toISOString().slice(0, 10);
+  const ok = {
+    name: v("name").value.trim().length >= 2,
+    bday: /^\d{4}-\d{2}-\d{2}$/.test(v("bday").value) && v("bday").value >= "1920-01-01" && v("bday").value <= limit,
+    branch: v("branch").value !== "",
+    phone: /^0[689]\d{8}$/.test(digits),
+    consent: v("consent").checked,
+  };
+  const label = { name: "ชื่อ-นามสกุล", bday: "วันเกิด", branch: "สาขา", phone: "เบอร์โทร 10 หลัก", consent: "กดยินยอม" };
+  const missing = Object.keys(ok).filter(k => !ok[k]);
+  for (const k of Object.keys(ok)) {
+    const el = k === "consent" ? document.getElementById("consentbox") : v(k);
+    el.classList.toggle("bad", !ok[k] && v(k).dataset.touched === "1");
+  }
+  document.getElementById("go").disabled = missing.length > 0;
+  document.getElementById("need").textContent = missing.length ? "กรุณากรอกให้ครบ: " + missing.map(k => label[k]).join(" · ") : "";
+  return missing;
 }
 
 async function submit() {
   const btn = document.getElementById("go"), err = document.getElementById("err");
+  if (check().length) return;
   err.textContent = ""; btn.disabled = true;
   const body = { t, full_name: document.getElementById("name").value, birthday: document.getElementById("bday").value,
     branch_id: Number(document.getElementById("branch").value), phone: document.getElementById("phone").value,
