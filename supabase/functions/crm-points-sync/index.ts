@@ -10,6 +10,8 @@
 // crm.pos_bill_lines, optional `menu` replaces crm.pos_menu; then crm.apply_coupon_rules() issues earned member-card
 // coupons inside a savepoint (a rule error is reported as coupon_error and never blocks the points sync).
 // v10 (0026): bills carry `total` (bill amount incl. VAT) for amount rules.
+// v11 (0029, 2026-11-24): optional `voided` {orders, lines} = member bills voided in the last 21 days; before issuing,
+// crm.take_back_voided() deletes the UNUSED coupons earned from them (copied to crm.coupon_takebacks; keep_on_void exempts).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -20,8 +22,8 @@ Deno.serve(async (req) => {
   const [s] = await sql`select value from crm.settings where key = 'points_sync_key'`;
   if (!key || !s?.value || key !== s.value) return new Response("forbidden", { status: 403 });
   try {
-    const { members, rewards, branches, stats, promo_uses, visits, bills, menu } = await req.json();
-    let issued: number | null = null, couponError: string | null = null;
+    const { members, rewards, branches, stats, promo_uses, visits, bills, menu, voided } = await req.json();
+    let issued: number | null = null, takenBack: number | null = null, couponError: string | null = null;
     if (!Array.isArray(members) || members.length < 50) throw new Error(`members: got ${members?.length ?? 0}, refusing to replace`);
     const ok = (p: string) => /^0[689]\d{8}$/.test(p);
     const m = members.filter((r: any) => ok(String(r.phone)));
@@ -107,10 +109,21 @@ Deno.serve(async (req) => {
           await tx`insert into crm.pos_bill_lines ${tx(ls.slice(i, i + 500), "line_id", "order_id", "item_id", "name", "category", "qty", "full_price")}`;
         }
       }
+      const vo = Array.isArray(voided?.orders) ? voided.orders.map(String).filter((x: string) => /^\d+-\d+$/.test(x)) : [];
+      const vl = Array.isArray(voided?.lines) ? voided.lines.map(String).filter((x: string) => /^\d+-\d+$/.test(x)) : [];
+      if (vo.length || vl.length) {
+        try {   // take back unused coupons of voided bills (0029); never blocks the sync
+          takenBack = await tx.savepoint(async (sp) =>
+            (await sp`select crm.take_back_voided(${"{" + vo.join(",") + "}"}::text[], ${"{" + vl.join(",") + "}"}::text[]) n`)[0].n as number);
+        } catch (e) {
+          couponError = "take_back: " + String(e).slice(0, 280);
+          console.error("take_back_voided", e);
+        }
+      } else if (voided) takenBack = 0;
       try {   // earned member-card coupons (0025); a failure here must not roll back the points sync
         issued = await tx.savepoint(async (sp) => (await sp`select crm.apply_coupon_rules() n`)[0].n as number);
       } catch (e) {
-        couponError = String(e).slice(0, 300);
+        couponError = (couponError ? couponError + " | " : "") + String(e).slice(0, 300);
         console.error("apply_coupon_rules", e);
       }
       if (Array.isArray(rewards)) {
@@ -129,7 +142,7 @@ Deno.serve(async (req) => {
     return Response.json({ ok: true, members: m.length, skipped: members.length - m.length, rewards: rewards?.length ?? 0, branches: branches?.length ?? 0,
       stats: stats?.length ?? 0, promo_uses: promo_uses?.length ?? 0, visits: visits?.length ?? 0,
       bills: Array.isArray(bills) ? bills.length : null, menu: Array.isArray(menu) ? menu.length : null,
-      coupons_issued: issued, coupon_error: couponError });
+      coupons_issued: issued, coupons_taken_back: takenBack, coupon_error: couponError });
   } catch (e) {
     console.error("crm-points-sync", e);
     return Response.json({ ok: false, error: String(e) }, { status: 500 });
