@@ -14,6 +14,9 @@
 // crm.take_back_voided() deletes the UNUSED coupons earned from them (copied to crm.coupon_takebacks; keep_on_void exempts).
 // v12 (2026-11-24): optional `ers_config` (ERS setup snapshot: promotions, discount reasons, loyalty ranks, observed
 // behaviour) is stored as JSON in crm.settings 'ers_config' for the sales site's ตั้งค่า POS checklist.
+// v13 (2026-11-24): ers_config.breaks = bills that broke a launch rule (Mac push BREAKS_SQL). Here the 'c40_lines' input
+// rows (member bills with coupon-discount lines) are matched to LINE coupon taps per member per day: more coupon lines
+// than taps -> 'c40_no_tap', more taps than lines -> 'tap_no_c40'. Stored back into ers_config.breaks for Final rules.
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -129,6 +132,26 @@ Deno.serve(async (req) => {
         console.error("apply_coupon_rules", e);
       }
       if (ers_config && typeof ers_config === "object" && !Array.isArray(ers_config)) {
+        const br = Array.isArray(ers_config.breaks) ? ers_config.breaks : [];
+        try {
+          const lines = br.filter((b: any) => b.rule === "c40_lines" && b.phone && b.day)
+            .map((b: any) => ({ phone: String(b.phone), day: String(b.day), c40: Number(b.c40) || 0 }));
+          const diff = await tx.savepoint(async (sp) => await sp`
+            with c as (select x->>'phone' phone, (x->>'day')::date d, sum((x->>'c40')::numeric) c40
+                       from jsonb_array_elements(${JSON.stringify(lines)}::text::jsonb) x group by 1, 2),
+                 t as (select m.phone, (c.redeemed_at at time zone 'Asia/Bangkok')::date d, count(*) taps
+                       from crm.coupons c join crm.line_members m using (line_user_id)
+                       where c.template_id is not null and c.redeemed_at > now() - interval '15 days' and m.phone is not null group by 1, 2)
+            select coalesce(c.phone, t.phone) phone, to_char(coalesce(c.d, t.d), 'YYYY-MM-DD') bday,
+                   coalesce(c.c40, 0)::float c40, coalesce(t.taps, 0)::int taps
+            from c full join t on c.phone = t.phone and c.d = t.d
+            where coalesce(c.c40, 0) <> coalesce(t.taps, 0)`);
+          ers_config.breaks = [...br.filter((b: any) => b.rule !== "c40_lines"),
+            ...diff.map((d: any) => ({ rule: d.c40 > d.taps ? "c40_no_tap" : "tap_no_c40", day: d.bday, phone: d.phone, c40: d.c40, taps: d.taps }))];
+        } catch (e) {
+          console.error("tap check", e);
+          ers_config.breaks = br.filter((b: any) => b.rule !== "c40_lines");
+        }
         await tx`insert into crm.settings (key, value, updated_at) values ('ers_config', ${JSON.stringify(ers_config)}, now())
                  on conflict (key) do update set value = excluded.value, updated_at = now()`;
       }
