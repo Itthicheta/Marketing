@@ -12,6 +12,8 @@
 // v10 (0026): bills carry `total` (bill amount incl. VAT) for amount rules.
 // v11 (0029, 2026-11-24): optional `voided` {orders, lines} = member bills voided in the last 21 days; before issuing,
 // crm.take_back_voided() deletes the UNUSED coupons earned from them (copied to crm.coupon_takebacks; keep_on_void exempts).
+// v12 (2026-11-24): optional `ers_config` (ERS setup snapshot: promotions, discount reasons, loyalty ranks, observed
+// behaviour) is stored as JSON in crm.settings 'ers_config' for the sales site's ตั้งค่า POS checklist.
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -22,7 +24,7 @@ Deno.serve(async (req) => {
   const [s] = await sql`select value from crm.settings where key = 'points_sync_key'`;
   if (!key || !s?.value || key !== s.value) return new Response("forbidden", { status: 403 });
   try {
-    const { members, rewards, branches, stats, promo_uses, visits, bills, menu, voided } = await req.json();
+    const { members, rewards, branches, stats, promo_uses, visits, bills, menu, voided, ers_config } = await req.json();
     let issued: number | null = null, takenBack: number | null = null, couponError: string | null = null;
     if (!Array.isArray(members) || members.length < 50) throw new Error(`members: got ${members?.length ?? 0}, refusing to replace`);
     const ok = (p: string) => /^0[689]\d{8}$/.test(p);
@@ -125,6 +127,10 @@ Deno.serve(async (req) => {
       } catch (e) {
         couponError = (couponError ? couponError + " | " : "") + String(e).slice(0, 300);
         console.error("apply_coupon_rules", e);
+      }
+      if (ers_config && typeof ers_config === "object" && !Array.isArray(ers_config)) {
+        await tx`insert into crm.settings (key, value, updated_at) values ('ers_config', ${JSON.stringify(ers_config)}, now())
+                 on conflict (key) do update set value = excluded.value, updated_at = now()`;
       }
       if (Array.isArray(rewards)) {
         await tx`delete from crm.pos_rewards`;

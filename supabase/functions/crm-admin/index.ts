@@ -15,6 +15,8 @@
 // v14 (0027): rules take require_clean (default true).
 // v15 (0030, 2026-11-24): coupons carry a use window — use_from / use_to (HH:MM, Bangkok) and use_days (ISO 1–7);
 // template_save changes them only when the payload has use_days (the on/off switch sends none, so it keeps them).
+// v16 (2026-11-24): ตั้งค่า POS checklist — read pos_setup (ERS snapshot crm.settings 'ers_config' from crm-points-sync v12,
+// manual ticks 'pos_manual', our own switches); write pos_tick {key, done} (logged).
 // v13 (0026): a rule is by product (categories) OR by bill amount (min_spend), never both; multi = more than one coupon per bill.
 // v12: template_delete {id, withdraw?} (409 field "withdraw" while copies are still usable on cards), rule_delete {id}.
 import postgres from "npm:postgres@3.4.5";
@@ -322,6 +324,28 @@ async function config() {
   return { settings: st, form_url: form?.value ?? null, promos, rewards, branches, tests, log };
 }
 
+// ---------- ตั้งค่า POS checklist (v16) ----------
+async function posSetup() {
+  const rows = await sql`select key, value, to_char(updated_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') at
+      from crm.settings where key in ('ers_config', 'pos_manual', 'signup_reward', 'reward_text', 'points_expiry_note')`;
+  const g = (k: string) => rows.find((r) => r.key === k);
+  const parse = (v: any) => { try { return v ? JSON.parse(v) : null; } catch { return null; } };
+  const templates = await sql`select t.id::int id, t.title, t.active, to_char(t.use_from, 'HH24:MI') use_from,
+      (select count(*)::int from crm.coupon_rules r where r.template_id = t.id and r.active) live_rules,
+      (select count(*)::int from crm.coupon_rules r where r.template_id = t.id) rules
+    from crm.coupon_templates t order by t.id`;
+  const [promos] = await sql`select count(*) filter (where active and (now() at time zone 'Asia/Bangkok')::date between valid_from and valid_to)::int live,
+      count(*)::int total from crm.promotions`;
+  const [line] = await sql`select count(*) filter (where phone is not null and blocked_at is null)::int members,
+      count(*) filter (where blocked_at is null)::int friends from crm.line_members`;
+  const [ps] = await sql`select value from crm.settings where key = 'menu_action_promotions'`;
+  const [tap] = await sql`select to_char(max(event_ts) at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') at from raw.line_events
+      where event_type = 'postback' and payload->'postback'->>'data' like ${"%actionId=" + (ps?.value ?? "-") + "%"}`;
+  return { ers: parse(g("ers_config")?.value), ers_at: g("ers_config")?.at ?? null, manual: parse(g("pos_manual")?.value) ?? {},
+    signup_reward: g("signup_reward")?.value ?? null, reward_text: g("reward_text")?.value ?? null,
+    expiry_note: g("points_expiry_note")?.value ?? null, templates, promos, line, promo_tap: tap?.at ?? null };
+}
+
 // ---------- writes ----------
 async function write(op: string, f: any, actor: string) {
   if (op === "template_save") {
@@ -356,6 +380,17 @@ async function write(op: string, f: any, actor: string) {
     await log(actor, op, { id, title, detail, start_after_days: sa, valid_days: vd, ers_hint: hint, active,
       ...(win ? { use_from: uf, use_to: ut, use_days: ud } : {}) });
     return Response.json({ ok: true, id });
+  }
+  if (op === "pos_tick") {
+    const key = String(f.key ?? ""), done = f.done === true;
+    if (!/^[a-z0-9_]{2,30}$/.test(key)) return bad("bad key");
+    const [cur] = await sql`select value from crm.settings where key = 'pos_manual'`;
+    let m: any = {}; try { m = cur?.value ? JSON.parse(cur.value) : {}; } catch { m = {}; }
+    m[key] = { done, by: actor, at: new Date().toISOString() };
+    await sql`insert into crm.settings (key, value, updated_at) values ('pos_manual', ${JSON.stringify(m)}, now())
+              on conflict (key) do update set value = excluded.value, updated_at = now()`;
+    await log(actor, op, { key, done });
+    return Response.json({ ok: true });
   }
   if (op === "rule_save") {
     const p = await parseRule(f);
@@ -614,6 +649,7 @@ Deno.serve(async (req) => {
     if (op === "members") return Response.json({ ok: true, ...(await members(f)) });
     if (op === "config") return Response.json({ ok: true, ...(await config()) });
     if (op === "rules_data") return Response.json({ ok: true, ...(await rulesData()) });
+    if (op === "pos_setup") return Response.json({ ok: true, ...(await posSetup()) });
     if (op === "member_visits") {   // the detail card's visit list (0024), newest first
       const phone = String(f.phone ?? "");
       if (!PHONE.test(phone)) return bad("เบอร์ไม่ถูกต้อง");
