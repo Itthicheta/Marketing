@@ -19,6 +19,8 @@
 // each staff confirm uses exactly one (onRedeemEarned). Sign-up / test coupons unchanged.
 // 2026-11-23: a confirm dies when its ยกเลิก is pressed or after 10 minutes (confirmDead).
 // 2026-11-23: card has two headed sections (แลกแต้ม / คูปองของฉัน) with dividers; the confirm's ยกเลิก now answers.
+// v15 2026-11-24 (0030): a coupon's use window (use_from / use_to / use_days on crm.coupon_templates) shows on the card
+// ("ใช้ได้ทุกวัน หลัง 14:00 น.") and ใช้สิทธิ์ / ยืนยัน are refused outside it (useWindow / useText).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -99,6 +101,23 @@ function cleanNumber(text: string): { digitLike: boolean; phone: string | null }
 const fmtPhone = (p: string) => `${p.slice(0, 3)}-${p.slice(3, 6)}-${p.slice(6)}`;
 const bkkDate = (offsetDays = 0) => new Date(Date.now() + 7 * 3600e3 + offsetDays * 86400e3).toISOString().slice(0, 10);
 const thDate = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+// coupon use window (0030): times "HH:MM" Bangkok (use_to exclusive), days ISO 1=Mon..7=Sun; null / empty = no limit
+const TH_DAY = ["จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส.", "อา."];
+function useText(from: string | null, to: string | null, days: number[] | null): string | null {
+  const ds = (days ?? []).map(Number).sort((a, b) => a - b);
+  const dayTxt = !ds.length || ds.length === 7 ? "ทุกวัน"
+    : ds.join() === "1,2,3,4,5" ? "จันทร์–ศุกร์" : ds.join() === "6,7" ? "เสาร์–อาทิตย์" : ds.map((d) => TH_DAY[d - 1]).join(" ");
+  const timeTxt = from && to ? `${from}–${to} น.` : from ? `หลัง ${from} น.` : to ? `ก่อน ${to} น.` : "";
+  if (dayTxt === "ทุกวัน" && !timeTxt) return null;
+  return `ใช้ได้${dayTxt}${timeTxt ? " " + timeTxt : ""}`;
+}
+function useWindow(from: string | null, to: string | null, days: number[] | null): { ok: boolean; now: string } {
+  const d = new Date(Date.now() + 7 * 3600e3), now = d.toISOString().slice(11, 16);
+  const dow = ((d.getUTCDay() + 6) % 7) + 1;
+  const ds = (days ?? []).map(Number);
+  const ok = (!ds.length || ds.includes(dow)) && (!from || now >= from) && (!to || now < to);
+  return { ok, now };
+}
 const fmtNum = (n: number) => Math.floor(n).toLocaleString("en-US");
 
 const MSG = {
@@ -141,12 +160,14 @@ async function memberCard(userId: string) {
   const coupons = await sql`
     select min(id) id, min(kind) kind, bool_or(template_id is not null) earned, title, max(detail) detail,
            to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
-           max(to_char(redeemed_at at time zone 'Asia/Bangkok','HH24:MI')) used_at, st, count(*)::int n
-    from (select *, case when redeemed_at is not null then 'used' when ${t}::date < valid_from then 'soon' else 'ready' end st
-          from crm.coupons
-          where line_user_id = ${userId}
-            and (redeemed_at is null and valid_to >= ${t}::date
-                 or (redeemed_at at time zone 'Asia/Bangkok')::date = ${t}::date)) c
+           max(to_char(redeemed_at at time zone 'Asia/Bangkok','HH24:MI')) used_at, st, count(*)::int n,
+           max(u_from) u_from, max(u_to) u_to, max(u_days) u_days
+    from (select c.*, case when c.redeemed_at is not null then 'used' when ${t}::date < c.valid_from then 'soon' else 'ready' end st,
+                 to_char(tp.use_from, 'HH24:MI') u_from, to_char(tp.use_to, 'HH24:MI') u_to, array_to_string(tp.use_days, ',') u_days
+          from crm.coupons c left join crm.coupon_templates tp on tp.id = c.template_id
+          where c.line_user_id = ${userId}
+            and (c.redeemed_at is null and c.valid_to >= ${t}::date
+                 or (c.redeemed_at at time zone 'Asia/Bangkok')::date = ${t}::date)) c
     group by coalesce(template_id::text, 'c' || id), title, valid_from, valid_to, st
     order by valid_from, min(id)`;
 
@@ -202,6 +223,8 @@ async function memberCard(userId: string) {
         : `ใช้ได้ถึง ${thDate(c.vt)}`, { size: "sm", color: used ? GREEN : GREY }),
     ];
     if (c.detail) contents.push(txt(c.detail, { size: "xs", color: GREY }));
+    const ut = useText(c.u_from, c.u_to, c.u_days ? String(c.u_days).split(",").map(Number) : null);
+    if (ut && !used) contents.push(txt(ut, { size: "xs", color: INK, weight: "bold" }));
     if (c.earned) contents.push(txt("ใช้ร่วมกับโปรโมชั่นอื่นไม่ได้", { size: "xs", color: GREY }));
     if (c.st === "ready") contents.push({
       type: "button", style: "primary", color: RED, height: "sm", margin: "md",
@@ -355,6 +378,13 @@ async function onRedeem(userId: string, replyToken: string, id: number, confirme
 // (the one expiring soonest) and "ยืนยัน" uses exactly that id, so a double tap can never use two.
 async function onRedeemEarned(userId: string, replyToken: string, id: number, tap: any, confirmed: boolean) {
   const d = bkkDate();
+  const [w] = await sql`select to_char(use_from, 'HH24:MI') f, to_char(use_to, 'HH24:MI') t, use_days::int[] days
+      from crm.coupon_templates where id = ${tap.template_id}`;
+  if (w) {
+    const chk = useWindow(w.f, w.t, w.days);
+    if (!chk.ok) return reply(replyToken,
+      `ยังใช้คูปอง "${tap.title}" ตอนนี้ไม่ได้ค่ะ (ตอนนี้ ${chk.now} น.)\n${useText(w.f, w.t, w.days)} · คูปองยังอยู่ในบัตรสมาชิกเหมือนเดิม`);
+  }
   const left = async () => (await sql`select count(*)::int n from crm.coupons where line_user_id = ${userId}
       and template_id = ${tap.template_id} and title = ${tap.title} and redeemed_at is null
       and ${d}::date between valid_from and valid_to`)[0].n as number;

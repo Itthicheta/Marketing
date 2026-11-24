@@ -13,6 +13,8 @@
 // v11 (2026-11-20, 0025): coupon rules — reads rules_data; writes template_save, rule_save, rule_toggle, rule_preview
 // (draft rule inside a rolled-back transaction, last 14 days, ignores armed_at), group_save, group_delete.
 // v14 (0027): rules take require_clean (default true).
+// v15 (0030, 2026-11-24): coupons carry a use window — use_from / use_to (HH:MM, Bangkok) and use_days (ISO 1–7);
+// template_save changes them only when the payload has use_days (the on/off switch sends none, so it keeps them).
 // v13 (0026): a rule is by product (categories) OR by bill amount (min_spend), never both; multi = more than one coupon per bill.
 // v12: template_delete {id, withdraw?} (409 field "withdraw" while copies are still usable on cards), rule_delete {id}.
 import postgres from "npm:postgres@3.4.5";
@@ -105,6 +107,7 @@ class Rollback extends Error {}
 async function rulesData() {
   const today = sql`(now() at time zone 'Asia/Bangkok')::date`;
   const templates = await sql`select t.id::int id, t.title, t.detail, t.start_after_days, t.valid_days, t.ers_hint, t.active,
+      to_char(t.use_from, 'HH24:MI') use_from, to_char(t.use_to, 'HH24:MI') use_to, coalesce(t.use_days, '{}')::int[] use_days,
       count(c.id)::int issued, count(c.redeemed_at)::int used,
       count(c.id) filter (where c.redeemed_at is null and c.valid_to < ${today})::int expired
     from crm.coupon_templates t left join crm.coupons c on c.template_id = t.id
@@ -330,16 +333,28 @@ async function write(op: string, f: any, actor: string) {
     if (!Number.isInteger(sa) || sa < 0 || sa > 30) return badField("start_after_days", "เริ่มใช้ได้หลังบิล 0–30 วัน");
     if (!Number.isInteger(vd) || vd < 1 || vd > 90) return badField("valid_days", "ใช้ได้ 1–90 วัน");
     if (hint && hint.length > 60) return badField("ers_hint", "ข้อความ ERS ยาวเกิน 60 ตัวอักษร");
+    const win = "use_days" in f;   // the use window is sent by the edit form only
+    const uf = f.use_from ? String(f.use_from) : null, ut = f.use_to ? String(f.use_to) : null;
+    if (win && uf && !HM.test(uf)) return badField("use_from", "เวลาเริ่มใช้ไม่ถูกต้อง");
+    if (win && ut && !HM.test(ut)) return badField("use_to", "เวลาสิ้นสุดไม่ถูกต้อง");
+    if (win && uf && ut && uf >= ut) return badField("use_to", "เวลาสิ้นสุดต้องหลังเวลาเริ่ม");
+    const udRaw = ints(f.use_days).filter((x) => x >= 1 && x <= 7);
+    const ud = win && udRaw.length && udRaw.length < 7 ? pgArr(udRaw.sort()) : null;
     let id = f.id ? Number(f.id) : null;
     if (id) {
-      const u = await sql`update crm.coupon_templates set title = ${title}, detail = ${detail}, start_after_days = ${sa},
-          valid_days = ${vd}, ers_hint = ${hint}, active = ${active}, updated_at = now() where id = ${id} returning id`;
+      const u = win
+        ? await sql`update crm.coupon_templates set title = ${title}, detail = ${detail}, start_after_days = ${sa},
+            valid_days = ${vd}, ers_hint = ${hint}, active = ${active}, use_from = ${uf}::time, use_to = ${ut}::time,
+            use_days = ${ud}::smallint[], updated_at = now() where id = ${id} returning id`
+        : await sql`update crm.coupon_templates set title = ${title}, detail = ${detail}, start_after_days = ${sa},
+            valid_days = ${vd}, ers_hint = ${hint}, active = ${active}, updated_at = now() where id = ${id} returning id`;
       if (!u.length) return bad("not found", 404);
     } else {
-      [{ id }] = await sql`insert into crm.coupon_templates (title, detail, start_after_days, valid_days, ers_hint, active)
-          values (${title}, ${detail}, ${sa}, ${vd}, ${hint}, ${active}) returning id::int id`;
+      [{ id }] = await sql`insert into crm.coupon_templates (title, detail, start_after_days, valid_days, ers_hint, active, use_from, use_to, use_days)
+          values (${title}, ${detail}, ${sa}, ${vd}, ${hint}, ${active}, ${uf}::time, ${ut}::time, ${ud}::smallint[]) returning id::int id`;
     }
-    await log(actor, op, { id, title, detail, start_after_days: sa, valid_days: vd, ers_hint: hint, active });
+    await log(actor, op, { id, title, detail, start_after_days: sa, valid_days: vd, ers_hint: hint, active,
+      ...(win ? { use_from: uf, use_to: ut, use_days: ud } : {}) });
     return Response.json({ ok: true, id });
   }
   if (op === "rule_save") {
