@@ -26,6 +26,7 @@
 // they earned themselves (never the sign-up gift; received coupons are never giftable again = one hop). The page talks
 // to the 4th door, /gift (giftApi): stacks -> friend lookup (masked name, max 10 per link) -> crm.gift_coupons().
 // Received stacks show "ได้รับจาก คุณสมชาย ใ***". The friend gets no LINE message (Point: no quota).
+// v17 2026-11-25 (0032): per-coupon switch coupon_templates.giftable (master switch coupon_gifts still applies).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -174,9 +175,9 @@ async function memberCard(userId: string) {
            to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
            max(to_char(redeemed_at at time zone 'Asia/Bangkok','HH24:MI')) used_at, st, count(*)::int n,
            max(u_from) u_from, max(u_to) u_to, max(u_days) u_days,
-           bool_or(rule_id is not null and gifted_from is null) giftable, max(from_name) from_name
+           bool_or(rule_id is not null and gifted_from is null and tpl_gift) giftable, max(from_name) from_name
     from (select c.*, case when c.redeemed_at is not null then 'used' when ${t}::date < c.valid_from then 'soon' else 'ready' end st,
-                 to_char(tp.use_from, 'HH24:MI') u_from, to_char(tp.use_to, 'HH24:MI') u_to, array_to_string(tp.use_days, ',') u_days,
+                 to_char(tp.use_from, 'HH24:MI') u_from, to_char(tp.use_to, 'HH24:MI') u_to, array_to_string(tp.use_days, ',') u_days, coalesce(tp.giftable, false) tpl_gift,
                  case when c.gifted_from is not null then coalesce(gm.full_name, gm.display_name, '') end from_name
           from crm.coupons c left join crm.coupon_templates tp on tp.id = c.template_id
                left join crm.line_members gm on gm.line_user_id = c.gifted_from
@@ -579,8 +580,9 @@ async function giftApi(req: Request): Promise<Response> {
     const stacks = await sql`
       select min(id)::int key, title, max(detail) detail, to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
              count(*)::int n, ${t}::date < valid_from soon
-      from crm.coupons where line_user_id = ${u} and rule_id is not null and gifted_from is null
+      from crm.coupons c where line_user_id = ${u} and rule_id is not null and gifted_from is null
         and redeemed_at is null and valid_to >= ${t}::date
+        and exists (select 1 from crm.coupon_templates tp where tp.id = c.template_id and tp.giftable)
       group by template_id, title, valid_from, valid_to order by valid_to, min(id)`;
     return json({ ok: true, stacks });
   }
