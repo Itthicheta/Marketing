@@ -15,6 +15,7 @@
 // v14 (0027): rules take require_clean (default true).
 // v15 (0030, 2026-11-24): coupons carry a use window — use_from / use_to (HH:MM, Bangkok) and use_days (ISO 1–7);
 // template_save changes them only when the payload has use_days (the on/off switch sends none, so it keeps them).
+// v17 (2026-11-25, 0031): members -> coupons[].gift_from ("name · phone" of the sender) and gifts_out[] (coupon gifts sent).
 // v16 (2026-11-24): ตั้งค่า POS checklist — read pos_setup (ERS snapshot crm.settings 'ers_config' from crm-points-sync v12,
 // manual ticks 'pos_manual', our own switches); write pos_tick {key, done} (logged).
 // v13 (0026): a rule is by product (categories) OR by bill amount (min_spend), never both; multi = more than one coupon per bill.
@@ -34,6 +35,7 @@ const EDITABLE: Record<string, (v: string) => boolean> = {
   points_expiry_note: (v) => v.length <= 60,
   signup_push: (v) => v === "on" || v === "off",
   signup_reward: (v) => v === "on" || v === "off",
+  coupon_gifts: (v) => v === "on" || v === "off",   // 0031: member-to-member coupon gifts
   privacy_version: (v) => v.length >= 2 && v.length <= 40,
   promo_style: (v) => validStyle(v),
 };
@@ -285,8 +287,14 @@ async function members(f: any) {
       s.pax::float pax, s.med_bowls::float med_bowls, s.med_pax::float med_pax, s.dine_visits,
       (select json_agg(json_build_object('kind', c.kind, 'title', c.title, 'from', c.valid_from, 'to', c.valid_to,
                'issued', to_char(c.issued_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD'),
-               'used', to_char(c.redeemed_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI')) order by c.id)
+               'used', to_char(c.redeemed_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI'),
+               'gift_from', (select coalesce(gm.full_name, gm.display_name, '') || ' · ' || coalesce(gm.phone, '')
+                             from crm.line_members gm where gm.line_user_id = c.gifted_from)) order by c.id)
          from crm.coupons c where c.line_user_id = m.line_user_id) coupons,
+      (select json_agg(json_build_object('at', to_char(g.at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI'), 'title', g.title, 'n', g.n,
+               'to', coalesce(gt.full_name, gt.display_name, '') || ' · ' || coalesce(gt.phone, '')) order by g.at desc)
+         from crm.coupon_gifts g left join crm.line_members gt on gt.line_user_id = g.to_user
+        where g.from_user = m.line_user_id) gifts_out,
       (select json_agg(json_build_object('at', to_char(u.sold_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI'),
                'branch', pb.name, 'promo', coalesce(u.promo_name, '#' || u.promo_id), 'items', u.items) order by u.sold_at desc)
          from crm.pos_promo_uses u left join crm.branches pb on pb.branch_id = u.branch_id where u.phone = bs.phone) promos,

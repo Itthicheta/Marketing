@@ -1,0 +1,128 @@
+<!doctype html>
+<!-- Mama Pook "ส่งต่อคูปองให้เพื่อน" page (Point 2026-11-25, migration 0031). Opened from the member card's button with a
+     one-time ?t= token (30 min); talks to line-webhook /gift. Steps: pick coupons + quantity -> friend's number ->
+     masked name to confirm -> send. The friend gets no LINE message; they see the coupons next time they open the card. -->
+<html lang="th"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>ส่งต่อคูปองให้เพื่อน · Mama Pook</title>
+<style>
+  :root { --red:#C8102E; --ink:#1D1D1F; --grey:#8E8E93; --line:#E5E5EA; --green:#1A7F3C; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Sukhumvit Set","Noto Sans Thai",sans-serif;
+         color:var(--ink); background:#F7F7F8; }
+  header { background:var(--red); color:#fff; padding:18px 20px; }
+  header h1 { margin:0; font-size:20px; } header p { margin:4px 0 0; font-size:14px; opacity:.9; }
+  main { padding:16px 20px 32px; max-width:480px; margin:0 auto; }
+  h3 { font-size:15px; margin:18px 0 8px; }
+  .cp { background:#fff; border:2px solid var(--line); border-radius:12px; padding:12px; margin-bottom:10px; }
+  .cp.on { border-color:var(--red); }
+  .cp b { font-size:16px; } .cp .sm { font-size:13px; color:var(--grey); margin-top:2px; }
+  .qty { display:flex; align-items:center; gap:12px; margin-top:10px; }
+  .qty button { width:40px; height:40px; margin:0; padding:0; font-size:22px; border-radius:20px; background:#fff;
+                color:var(--red); border:2px solid var(--red); }
+  .qty button:disabled { opacity:.3; }
+  .qty span { font-size:20px; font-weight:700; min-width:28px; text-align:center; }
+  .qty .of { font-size:13px; color:var(--grey); font-weight:400; }
+  input { width:100%; font-size:20px; padding:12px; border:1px solid var(--line); border-radius:10px; background:#fff;
+          color:var(--ink); letter-spacing:1px; }
+  button.main { width:100%; margin-top:18px; font-size:17px; font-weight:600; padding:14px; border:0; border-radius:12px;
+                background:var(--red); color:#fff; }
+  button.main:disabled { opacity:.45; }
+  button.ghost { width:100%; margin-top:10px; font-size:15px; padding:12px; border:1px solid var(--line); border-radius:12px;
+                 background:#fff; color:var(--ink); }
+  .who { background:#fff; border:2px solid var(--green); border-radius:12px; padding:14px; margin-top:14px; text-align:center; }
+  .who .nm { font-size:20px; font-weight:700; } .who .sm { font-size:13px; color:var(--grey); }
+  .sum { font-size:14px; margin-top:10px; line-height:1.6; }
+  .err { color:var(--red); font-size:14px; margin-top:12px; min-height:20px; }
+  .hint { color:var(--grey); font-size:12px; margin-top:6px; }
+  .done { text-align:center; padding:40px 10px; } .done h2 { margin:0 0 10px; }
+</style></head>
+<body>
+<header><h1>ส่งต่อคูปองให้เพื่อน</h1><p>เพื่อนต้องเป็นสมาชิก Mama Pook ใน LINE</p></header>
+<main id="main"><p>กำลังโหลด...</p></main>
+<script>
+const API = "https://qtpwrwapbefczvqdfzes.supabase.co/functions/v1/line-webhook/gift";
+const t = new URLSearchParams(location.search).get("t") || "";
+const main = document.getElementById("main");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const thDate = iso => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+const doneMsg = (h, p) => { main.innerHTML = `<div class="done"><h2>${esc(h)}</h2><p>${esc(p)}</p></div>`; };
+const post = async body => {
+  try { return await (await fetch(API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ t, ...body }) })).json(); }
+  catch { return { ok: false, error: "เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่อีกครั้งค่ะ" }; }
+};
+let stacks = [], pick = {}, friend = null;
+
+async function start() {
+  let d;
+  try { d = await (await fetch(`${API}?t=${encodeURIComponent(t)}`)).json(); } catch { d = null; }
+  if (!d || !d.ok) return doneMsg("ลิงก์นี้ใช้แล้วหรือหมดอายุ", "กลับไปที่แชต LINE แล้วกดปุ่ม MEMBERS เพื่อเปิดบัตรสมาชิกใหม่ค่ะ");
+  stacks = d.stacks;
+  if (!stacks.length) return doneMsg("ไม่มีคูปองที่ส่งต่อได้", "คูปองที่ได้รับจากเพื่อน และของขวัญสมัครสมาชิก ส่งต่อไม่ได้ค่ะ");
+  if (stacks.length === 1) pick[stacks[0].key] = 1;
+  step1();
+}
+
+// step 1: which coupons and how many + the friend's number
+function step1(errText = "") {
+  friend = null;
+  main.innerHTML = `<h3>1. เลือกคูปองและจำนวน</h3>` + stacks.map(s => {
+    const q = pick[s.key] || 0;
+    return `<div class="cp ${q ? "on" : ""}"><b>${esc(s.title)}</b>
+      <div class="sm">${s.soon ? `เริ่มใช้ได้ ${thDate(s.vf)} ถึง ${thDate(s.vt)}` : `ใช้ได้ถึง ${thDate(s.vt)}`}</div>
+      ${s.detail ? `<div class="sm">${esc(s.detail)}</div>` : ""}
+      <div class="qty"><button data-k="${s.key}" data-d="-1" ${q ? "" : "disabled"}>−</button><span>${q}</span>
+        <button data-k="${s.key}" data-d="1" ${q >= s.n ? "disabled" : ""}>+</button><span class="of">จากที่มี ${s.n} ใบ</span></div></div>`;
+  }).join("") + `
+    <h3>2. เบอร์โทรของเพื่อน</h3>
+    <input id="phone" type="tel" inputmode="numeric" maxlength="12" placeholder="0812345678" value="${esc(window._ph || "")}">
+    <div class="hint">วันหมดอายุของคูปองยังเหมือนเดิม</div>
+    <button class="main" id="next">ถัดไป</button>
+    <div class="err" id="err">${esc(errText)}</div>`;
+  main.querySelectorAll(".qty button").forEach(b => b.onclick = () => {
+    const k = b.dataset.k, s = stacks.find(x => String(x.key) === k);
+    pick[k] = Math.max(0, Math.min(s.n, (pick[k] || 0) + Number(b.dataset.d)));
+    window._ph = document.getElementById("phone").value; step1();
+  });
+  const ph = document.getElementById("phone"), nx = document.getElementById("next");
+  const ok = () => { const digits = ph.value.replace(/[\s\-.()+]/g, "").replace(/^66(?=\d{9}$)/, "0");
+    nx.disabled = !(/^0[689]\d{8}$/.test(digits) && total() > 0); };
+  ph.oninput = ok; ok();
+  nx.onclick = lookup;
+}
+const total = () => Object.values(pick).reduce((a, b) => a + b, 0);
+
+async function lookup() {
+  const nx = document.getElementById("next"), phone = document.getElementById("phone").value;
+  window._ph = phone; nx.disabled = true;
+  const d = await post({ phone });
+  if (!d.ok) return step1(d.error);
+  friend = { phone, name: d.name, last4: d.last4 };
+  step2();
+}
+
+// step 2: confirm the masked name
+function step2(errText = "") {
+  const lines = stacks.filter(s => pick[s.key]).map(s => `• ${esc(s.title)} × ${pick[s.key]} ใบ`).join("<br>");
+  main.innerHTML = `
+    <div class="who"><div class="sm">ส่งให้</div><div class="nm">${esc(friend.name)}</div>
+      <div class="sm">เบอร์ลงท้าย ${esc(friend.last4)}</div></div>
+    <div class="sum">${lines}</div>
+    <button class="main" id="send">ยืนยันส่งคูปอง</button>
+    <button class="ghost" id="back">ไม่ใช่ / แก้ไข</button>
+    <div class="err" id="err">${esc(errText)}</div>`;
+  document.getElementById("back").onclick = () => step1();
+  document.getElementById("send").onclick = send;
+}
+
+async function send() {
+  const b = document.getElementById("send"); b.disabled = true;
+  const items = Object.entries(pick).filter(([, n]) => n > 0).map(([key, n]) => ({ key: Number(key), n }));
+  const d = await post({ phone: friend.phone, items, confirm: true });
+  if (!d.ok) return step2(d.error);
+  doneMsg(`ส่งคูปอง ${d.n} ใบ ให้ ${d.name} แล้วค่ะ`,
+          "เพื่อนจะเห็นคูปองเมื่อเปิดบัตรสมาชิกครั้งถัดไป · กลับไปที่แชตแล้วกด MEMBERS เพื่อดูคูปองที่เหลือของคุณค่ะ");
+}
+start();
+</script>
+</body></html>

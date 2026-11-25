@@ -1,5 +1,5 @@
 // line-webhook — LINE member program for @mamapook (Point 2026-11-17, v4 2026-11-18).
-// One function, three doors:
+// One function, four doors (4 = /gift, see v16 below):
 //  1. LINE events (X-Line-Signature): logs every event to raw.line_events, sends the sign-up button on
 //     follow, answers the MEMBERS and PROMOTIONS menu buttons, runs the two-step staff redeem.
 //  2. /signup (the sign-up form page): GET ?t=<one-time token> -> form data; POST -> link the phone,
@@ -21,6 +21,11 @@
 // 2026-11-23: card has two headed sections (แลกแต้ม / คูปองของฉัน) with dividers; the confirm's ยกเลิก now answers.
 // v15 2026-11-24 (0030): a coupon's use window (use_from / use_to / use_days on crm.coupon_templates) shows on the card
 // ("ใช้ได้ทุกวัน หลัง 14:00 น.") and ใช้สิทธิ์ / ยืนยัน are refused outside it (useWindow / useText).
+// v16 2026-11-25 (0031, Point): coupon gifts. With crm.settings.coupon_gifts = 'on' the card carries "ส่งต่อคูปองให้เพื่อน"
+// (a fresh 30-min one-time link to member-card-page/gift.html) when the member holds a giftable coupon: a rule coupon
+// they earned themselves (never the sign-up gift; received coupons are never giftable again = one hop). The page talks
+// to the 4th door, /gift (giftApi): stacks -> friend lookup (masked name, max 10 per link) -> crm.gift_coupons().
+// Received stacks show "ได้รับจาก คุณสมชาย ใ***". The friend gets no LINE message (Point: no quota).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -119,6 +124,13 @@ function useWindow(from: string | null, to: string | null, days: number[] | null
   return { ok, now };
 }
 const fmtNum = (n: number) => Math.floor(n).toLocaleString("en-US");
+// "สมชาย ใจดี" -> "คุณสมชาย ใ***" (Point 2026-11-25: first name + masked surname, never the full name)
+function maskName(full: string | null, disp: string | null): string {
+  const parts = String(full || disp || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "สมาชิก";
+  return "คุณ" + Array.from(parts[0]).slice(0, 20).join("") + (parts[1] ? " " + Array.from(parts[1])[0] + "***" : "");
+}
+const newToken = () => crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "").slice(0, 8);
 
 const MSG = {
   taken: "เบอร์นี้ลงทะเบียนกับ LINE บัญชีอื่นแล้วค่ะ รบกวนแจ้งพนักงานที่ร้านนะคะ",
@@ -161,14 +173,17 @@ async function memberCard(userId: string) {
     select min(id) id, min(kind) kind, bool_or(template_id is not null) earned, title, max(detail) detail,
            to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
            max(to_char(redeemed_at at time zone 'Asia/Bangkok','HH24:MI')) used_at, st, count(*)::int n,
-           max(u_from) u_from, max(u_to) u_to, max(u_days) u_days
+           max(u_from) u_from, max(u_to) u_to, max(u_days) u_days,
+           bool_or(rule_id is not null and gifted_from is null) giftable, max(from_name) from_name
     from (select c.*, case when c.redeemed_at is not null then 'used' when ${t}::date < c.valid_from then 'soon' else 'ready' end st,
-                 to_char(tp.use_from, 'HH24:MI') u_from, to_char(tp.use_to, 'HH24:MI') u_to, array_to_string(tp.use_days, ',') u_days
+                 to_char(tp.use_from, 'HH24:MI') u_from, to_char(tp.use_to, 'HH24:MI') u_to, array_to_string(tp.use_days, ',') u_days,
+                 case when c.gifted_from is not null then coalesce(gm.full_name, gm.display_name, '') end from_name
           from crm.coupons c left join crm.coupon_templates tp on tp.id = c.template_id
+               left join crm.line_members gm on gm.line_user_id = c.gifted_from
           where c.line_user_id = ${userId}
             and (c.redeemed_at is null and c.valid_to >= ${t}::date
                  or (c.redeemed_at at time zone 'Asia/Bangkok')::date = ${t}::date)) c
-    group by coalesce(template_id::text, 'c' || id), title, valid_from, valid_to, st
+    group by coalesce(template_id::text, 'c' || id), title, valid_from, valid_to, st, gifted_from
     order by valid_from, min(id)`;
 
   const body: unknown[] = [
@@ -226,6 +241,7 @@ async function memberCard(userId: string) {
     const ut = useText(c.u_from, c.u_to, c.u_days ? String(c.u_days).split(",").map(Number) : null);
     if (ut && !used) contents.push(txt(ut, { size: "xs", color: INK, weight: "bold" }));
     if (c.earned) contents.push(txt("ใช้ร่วมกับโปรโมชั่นอื่นไม่ได้", { size: "xs", color: GREY }));
+    if (c.from_name !== null && c.from_name !== undefined) contents.push(txt(`ได้รับจาก ${maskName(c.from_name, null)}`, { size: "xs", color: GREEN }));
     if (c.st === "ready") contents.push({
       type: "button", style: "primary", color: RED, height: "sm", margin: "md",
       action: { type: "postback", label: "ใช้สิทธิ์ (สำหรับพนักงาน)", data: `action=redeem&id=${c.id}` },
@@ -234,6 +250,14 @@ async function memberCard(userId: string) {
       type: "box", layout: "vertical", margin: "lg", paddingAll: "12px", cornerRadius: "12px",
       borderWidth: "2px", borderColor: used || soon ? LINE_GREY : RED, contents,
     });
+  }
+  // gift button (0031): one per card, only when gifts are on and something can be passed on
+  if (s.coupon_gifts === "on" && s.gift_form_url && coupons.some((c: any) => c.giftable && c.st !== "used")) {
+    const tok = newToken();
+    await sql`delete from crm.gift_tokens where expires_at < now() - interval '1 day'`;
+    await sql`insert into crm.gift_tokens (token, line_user_id) values (${tok}, ${userId})`;
+    body.push({ type: "button", style: "secondary", height: "sm", margin: "lg",
+      action: { type: "uri", label: "ส่งต่อคูปองให้เพื่อน", uri: `${s.gift_form_url}?t=${tok}` } });
   }
   return {
     type: "flex", altText: `บัตรสมาชิก ${fmtPhone(m.phone)}`,
@@ -295,7 +319,7 @@ async function promotions(userId: string | null, includeInactive = false) {
 
 // ---------- sign-up button (one-time link to the form) ----------
 async function signupMessage(userId: string, s: Record<string, string>) {
-  const tok = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "").slice(0, 8);
+  const tok = newToken();
   await sql`insert into crm.signup_tokens (token, line_user_id) values (${tok}, ${userId})`;
   const url = `${s.signup_form_url}?t=${tok}`;
   return {
@@ -531,6 +555,65 @@ async function signupApi(req: Request): Promise<Response> {
   return json({ ok: true, isNew });
 }
 
+// ---------- coupon gift page API (/gift, 0031) ----------
+const GIFT_ERR: Record<string, string> = {
+  expired: "ลิงก์นี้ใช้แล้วหรือหมดอายุค่ะ กลับไปที่แชต LINE แล้วกด MEMBERS เพื่อเปิดบัตรใหม่",
+  not_member: "เบอร์นี้ยังไม่ได้เป็นสมาชิก Mama Pook ใน LINE ค่ะ ชวนเพื่อนสมัครสมาชิกก่อนแล้วค่อยส่งนะคะ",
+  self: "ส่งให้เบอร์ของตัวเองไม่ได้ค่ะ",
+  not_enough: "คูปองไม่พอหรือถูกใช้ไปแล้วค่ะ กลับไปที่แชตแล้วกด MEMBERS เพื่อเปิดบัตรใหม่",
+  bad_qty: "กรุณาเลือกคูปองและจำนวนค่ะ", nothing: "กรุณาเลือกคูปองและจำนวนค่ะ",
+  too_many: "ค้นหาเบอร์เกินจำนวนครั้งแล้วค่ะ กลับไปที่แชตแล้วกด MEMBERS เพื่อเปิดลิงก์ใหม่",
+  phone: "เบอร์โทรไม่ถูกต้องค่ะ กรุณากรอก 10 หลัก เช่น 0812345678",
+};
+async function giftTokenUser(tok: string): Promise<string | null> {
+  if (!/^[a-f0-9]{40}$/.test(tok)) return null;
+  const [r] = await sql`select line_user_id from crm.gift_tokens where token = ${tok} and used_at is null and expires_at > now()`;
+  return r?.line_user_id ?? null;
+}
+async function giftApi(req: Request): Promise<Response> {
+  if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+  const t = bkkDate();
+  if (req.method === "GET") {
+    const u = await giftTokenUser(new URL(req.url).searchParams.get("t") ?? "");
+    if (!u) return json({ ok: false, error: GIFT_ERR.expired }, 410);
+    const stacks = await sql`
+      select min(id)::int key, title, max(detail) detail, to_char(valid_from,'YYYY-MM-DD') vf, to_char(valid_to,'YYYY-MM-DD') vt,
+             count(*)::int n, ${t}::date < valid_from soon
+      from crm.coupons where line_user_id = ${u} and rule_id is not null and gifted_from is null
+        and redeemed_at is null and valid_to >= ${t}::date
+      group by template_id, title, valid_from, valid_to order by valid_to, min(id)`;
+    return json({ ok: true, stacks });
+  }
+  if (req.method !== "POST") return json({ ok: false, error: "method" }, 405);
+  let f: any;
+  try { f = await req.json(); } catch { return json({ ok: false, error: "ข้อมูลไม่ถูกต้อง" }, 400); }
+  const tok = String(f.t ?? "");
+  const u = await giftTokenUser(tok);
+  if (!u) return json({ ok: false, error: GIFT_ERR.expired }, 410);
+  const { phone } = cleanNumber(String(f.phone ?? ""));
+  if (!phone) return json({ ok: false, error: GIFT_ERR.phone }, 400);
+  if (f.confirm !== true) {            // step 1: who is this number? (counted, max 10 per link)
+    const ok = await sql`update crm.gift_tokens set lookups = lookups + 1 where token = ${tok} and lookups < 10 returning 1`;
+    if (!ok.length) return json({ ok: false, error: GIFT_ERR.too_many }, 429);
+    const [m] = await sql`select line_user_id, full_name, display_name from crm.line_members
+                          where phone = ${phone} and linked_at is not null and blocked_at is null`;
+    if (!m) return json({ ok: false, error: GIFT_ERR.not_member }, 404);
+    if (m.line_user_id === u) return json({ ok: false, error: GIFT_ERR.self }, 400);
+    return json({ ok: true, name: maskName(m.full_name, m.display_name), last4: phone.slice(-4) });
+  }
+  const items = Array.isArray(f.items) ? f.items.map((x: any) => ({ key: Number(x.key), n: Number(x.n) }))
+                                         .filter((x: any) => Number.isInteger(x.key) && Number.isInteger(x.n) && x.n > 0) : [];
+  try {             // step 2: move them (all or nothing, crm.gift_coupons)
+    const [{ r }] = await sql`select crm.gift_coupons(${tok}, ${phone}, ${JSON.stringify(items)}::text::jsonb) r`;
+    const [m] = await sql`select full_name, display_name from crm.line_members where line_user_id = ${r.to_user}`;
+    return json({ ok: true, n: r.n, items: r.items, name: maskName(m?.full_name, m?.display_name) });
+  } catch (e) {
+    const code = /gift:(\w+)/.exec(String(e))?.[1];
+    if (!code) console.error("gift failed", e);
+    return json({ ok: false, error: GIFT_ERR[code ?? ""] ?? "ส่งไม่สำเร็จ กรุณาลองใหม่อีกครั้งค่ะ" }, code ? 409 : 500);
+  }
+}
+
 // ---------- admin push (one-time key) ----------
 async function adminPush(req: Request, body: string, sendKey: string): Promise<Response> {
   const armed = await sql`update crm.settings set value = null, updated_at = now()
@@ -554,6 +637,7 @@ async function adminPush(req: Request, body: string, sendKey: string): Promise<R
 Deno.serve(async (req) => {
   const path = new URL(req.url).pathname;
   if (path.endsWith("/signup")) return signupApi(req);
+  if (path.endsWith("/gift")) return giftApi(req);
   if (req.method !== "POST") return new Response("ok");
   const body = await req.text();
   const sendKey = req.headers.get("x-send-key");
