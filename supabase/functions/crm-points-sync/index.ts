@@ -17,6 +17,9 @@
 // v13 (2026-11-24): ers_config.breaks = bills that broke a launch rule (Mac push BREAKS_SQL). Here the 'c40_lines' input
 // rows (member bills with coupon-discount lines) are matched to LINE coupon taps per member per day: more coupon lines
 // than taps -> 'c40_no_tap', more taps than lines -> 'tap_no_c40'. Stored back into ers_config.breaks for Final rules.
+// v14 (2026-11-26, 0035): optional `ers_coupons` {series, cards} = ERS coupon series + every coupon code ERS holds
+// (number, active, used, used_at, branch, order / bill). Replaces crm.ers_coupon_series / crm.ers_coupon_cards, which
+// gate which of our generated codes can be handed out and confirm the ones staff showed. Never blocks the points sync.
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -27,8 +30,8 @@ Deno.serve(async (req) => {
   const [s] = await sql`select value from crm.settings where key = 'points_sync_key'`;
   if (!key || !s?.value || key !== s.value) return new Response("forbidden", { status: 403 });
   try {
-    const { members, rewards, branches, stats, promo_uses, visits, bills, menu, voided, ers_config } = await req.json();
-    let issued: number | null = null, takenBack: number | null = null, couponError: string | null = null;
+    const { members, rewards, branches, stats, promo_uses, visits, bills, menu, voided, ers_config, ers_coupons } = await req.json();
+    let codesSynced: number | null = null, issued: number | null = null, takenBack: number | null = null, couponError: string | null = null;
     if (!Array.isArray(members) || members.length < 50) throw new Error(`members: got ${members?.length ?? 0}, refusing to replace`);
     const ok = (p: string) => /^0[689]\d{8}$/.test(p);
     const m = members.filter((r: any) => ok(String(r.phone)));
@@ -155,6 +158,33 @@ Deno.serve(async (req) => {
         await tx`insert into crm.settings (key, value, updated_at) values ('ers_config', ${JSON.stringify(ers_config)}, now())
                  on conflict (key) do update set value = excluded.value, updated_at = now()`;
       }
+      if (ers_coupons && Array.isArray(ers_coupons.series) && Array.isArray(ers_coupons.cards)) {
+        try {
+          codesSynced = await tx.savepoint(async (sp) => {
+            const int = (v: any) => Number.isInteger(Number(v)) && v !== null && v !== "" ? Number(v) : null;
+            const ser = ers_coupons.series.filter((x: any) => int(x.series_id) !== null).map((x: any) => ({
+              series_id: int(x.series_id), name: x.name ?? null, code: x.code ?? null, active: x.active === true, inside: x.inside === true,
+              start_date: x.start_date ? String(x.start_date).slice(0, 10) : null, expire_date: x.expire_date ? String(x.expire_date).slice(0, 10) : null,
+              branch_ids: "{" + (Array.isArray(x.branch_ids) ? x.branch_ids : []).map(int).filter((b: any) => b !== null).join(",") + "}" }));
+            const cards = ers_coupons.cards.filter((x: any) => int(x.card_id) !== null && x.number).map((x: any) => ({
+              card_id: int(x.card_id), series_id: int(x.series_id), number: String(x.number).trim(), active: x.active === true,
+              expire_date: x.expire_date ? String(x.expire_date).slice(0, 10) : null, used: x.used === true, used_at: x.used_at ?? null,
+              used_branch_id: int(x.used_branch_id), used_order_id: x.used_order_id ?? null, used_bill_no: x.used_bill_no ?? null,
+              inserted_at: x.inserted_at ?? null }));
+            await sp`delete from crm.ers_coupon_series`;
+            if (ser.length) await sp`insert into crm.ers_coupon_series ${sp(ser, "series_id", "name", "code", "active", "inside", "start_date", "expire_date", "branch_ids")}`;
+            await sp`delete from crm.ers_coupon_cards`;
+            for (let i = 0; i < cards.length; i += 500) {
+              await sp`insert into crm.ers_coupon_cards ${sp(cards.slice(i, i + 500), "card_id", "series_id", "number", "active", "expire_date",
+                "used", "used_at", "used_branch_id", "used_order_id", "used_bill_no", "inserted_at")}`;
+            }
+            return cards.length;
+          });
+        } catch (e) {
+          couponError = (couponError ? couponError + " | " : "") + "ers_coupons: " + String(e).slice(0, 200);
+          console.error("ers_coupons", e);
+        }
+      }
       if (Array.isArray(rewards)) {
         await tx`delete from crm.pos_rewards`;
         const rw = rewards.map((r: any) => ({ item_code: String(r.item_code), ers_name: String(r.ers_name), points: Number(r.points) }));
@@ -171,7 +201,7 @@ Deno.serve(async (req) => {
     return Response.json({ ok: true, members: m.length, skipped: members.length - m.length, rewards: rewards?.length ?? 0, branches: branches?.length ?? 0,
       stats: stats?.length ?? 0, promo_uses: promo_uses?.length ?? 0, visits: visits?.length ?? 0,
       bills: Array.isArray(bills) ? bills.length : null, menu: Array.isArray(menu) ? menu.length : null,
-      coupons_issued: issued, coupons_taken_back: takenBack, coupon_error: couponError });
+      coupons_issued: issued, coupons_taken_back: takenBack, ers_codes: codesSynced, coupon_error: couponError });
   } catch (e) {
     console.error("crm-points-sync", e);
     return Response.json({ ok: false, error: String(e) }, { status: 500 });

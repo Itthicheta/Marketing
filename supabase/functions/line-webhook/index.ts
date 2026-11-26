@@ -19,6 +19,10 @@
 // each staff confirm uses exactly one (onRedeemEarned). Sign-up / test coupons unchanged.
 // 2026-11-23: a confirm dies when its ยกเลิก is pressed or after 10 minutes (confirmDead).
 // 2026-11-23: card has two headed sections (แลกแต้ม / คูปองของฉัน) with dividers; the confirm's ยกเลิก now answers.
+// v18 2026-11-26 (0035): coupons with use_codes + an ERS series take a one-use 8-digit code at the staff ยืนยัน
+// (crm.redeem_with_code: coupon used + code taken in one go; no ready code -> coupon NOT used). The reply is plain text
+// with the code, its own expiry and the tap time. The card's ใช้สิทธิ์ button shows only inside the coupon's use window
+// (outside it: grey text); the server still re-checks at the tap because an old card may sit in the chat.
 // v15 2026-11-24 (0030): a coupon's use window (use_from / use_to / use_days on crm.coupon_templates) shows on the card
 // ("ใช้ได้ทุกวัน หลัง 14:00 น.") and ใช้สิทธิ์ / ยืนยัน are refused outside it (useWindow / useText).
 // v16 2026-11-25 (0031, Point): coupon gifts. With crm.settings.coupon_gifts = 'on' the card carries "ส่งต่อคูปองให้เพื่อน"
@@ -243,10 +247,12 @@ async function memberCard(userId: string) {
     if (ut && !used) contents.push(txt(ut, { size: "xs", color: INK, weight: "bold" }));
     if (c.earned) contents.push(txt("ใช้ร่วมกับโปรโมชั่นอื่นไม่ได้", { size: "xs", color: GREY }));
     if (c.from_name !== null && c.from_name !== undefined) contents.push(txt(`ได้รับจาก ${maskName(c.from_name, null)}`, { size: "xs", color: GREEN }));
-    if (c.st === "ready") contents.push({
+    const uw = useWindow(c.u_from, c.u_to, c.u_days ? String(c.u_days).split(",").map(Number) : null);
+    if (c.st === "ready" && uw.ok) contents.push({
       type: "button", style: "primary", color: RED, height: "sm", margin: "md",
       action: { type: "postback", label: "ใช้สิทธิ์ (สำหรับพนักงาน)", data: `action=redeem&id=${c.id}` },
     });
+    else if (c.st === "ready") contents.push(txt("ยังกดใช้ตอนนี้ไม่ได้ · ถึงเวลาแล้วกด MEMBERS ใหม่", { size: "xs", color: GREY, margin: "md" }));
     body.push({
       type: "box", layout: "vertical", margin: "lg", paddingAll: "12px", cornerRadius: "12px",
       borderWidth: "2px", borderColor: used || soon ? LINE_GREY : RED, contents,
@@ -403,7 +409,8 @@ async function onRedeem(userId: string, replyToken: string, id: number, confirme
 // (the one expiring soonest) and "ยืนยัน" uses exactly that id, so a double tap can never use two.
 async function onRedeemEarned(userId: string, replyToken: string, id: number, tap: any, confirmed: boolean) {
   const d = bkkDate();
-  const [w] = await sql`select to_char(use_from, 'HH24:MI') f, to_char(use_to, 'HH24:MI') t, use_days::int[] days
+  const [w] = await sql`select to_char(use_from, 'HH24:MI') f, to_char(use_to, 'HH24:MI') t, use_days::int[] days,
+      use_codes and ers_series_id is not null codes
       from crm.coupon_templates where id = ${tap.template_id}`;
   if (w) {
     const chk = useWindow(w.f, w.t, w.days);
@@ -413,6 +420,21 @@ async function onRedeemEarned(userId: string, replyToken: string, id: number, ta
   const left = async () => (await sql`select count(*)::int n from crm.coupons where line_user_id = ${userId}
       and template_id = ${tap.template_id} and title = ${tap.title} and redeemed_at is null
       and ${d}::date between valid_from and valid_to`)[0].n as number;
+  if (confirmed && w?.codes) {   // 0035: coupon used + one-use code taken together
+    let r: any;
+    try { [r] = await sql`select code, to_char(used_at at time zone 'Asia/Bangkok', 'DD/MM/YYYY HH24:MI') at,
+                                 to_char(valid_to, 'YYYY-MM-DD') vt from crm.redeem_with_code(${id}, ${userId})`; }
+    catch (e) {
+      const m = String((e as any)?.message ?? e);
+      if (m.includes("code:empty")) return reply(replyToken,
+        `ตอนนี้ยังไม่มีรหัสคูปอง "${tap.title}" ค่ะ กรุณาแจ้งผู้จัดการ\nคูปองยังอยู่ในบัตรสมาชิกเหมือนเดิม ยังไม่ได้ใช้`);
+      if (m.includes("code:gone")) return reply(replyToken, `คูปองใบนี้ใช้ไปแล้วหรือหมดอายุแล้วค่ะ (เหลือ ${await left()} ใบ)`);
+      throw e;
+    }
+    const k = String(r.code);
+    return reply(replyToken, `${tap.title}\nรหัส ${k.slice(0, 4)} ${k.slice(4)}\nใช้ได้ถึง ${thDate(r.vt)}\nกดใช้เมื่อ ${r.at} น.\n` +
+      `พนักงาน: ใส่รหัสนี้ใน ERS · เหลือ ${await left()} ใบ`);
+  }
   if (confirmed) {
     const done = await sql`update crm.coupons set redeemed_at = now()
         where id = ${id} and line_user_id = ${userId} and redeemed_at is null and ${d}::date between valid_from and valid_to
@@ -425,8 +447,10 @@ async function onRedeemEarned(userId: string, replyToken: string, id: number, ta
         and c.redeemed_at is null and ${d}::date between c.valid_from and c.valid_to
       order by c.valid_to, c.id limit 1`;
   if (!c) return reply(replyToken, `วันนี้ไม่มีคูปอง "${tap.title}" ที่ใช้ได้แล้วค่ะ`);
-  const text = `พนักงาน: ยืนยันใช้สิทธิ์ "${tap.title}" 1 ใบ? (มี ${await left()} ใบ)\nใช้ร่วมกับโปรโมชั่นอื่นไม่ได้` +
-    (c.ers_hint ? `\nใส่ ${c.ers_hint} ที่ POS` : "");
+  const text = w?.codes
+    ? `สำหรับพนักงานเท่านั้น · กดยืนยันแล้วคูปองถูกใช้ทันที\nใช้ "${tap.title}" 1 ใบ? (มี ${await left()} ใบ)\nรหัสจะขึ้นหลังกดยืนยัน`
+    : `พนักงาน: ยืนยันใช้สิทธิ์ "${tap.title}" 1 ใบ? (มี ${await left()} ใบ)\nใช้ร่วมกับโปรโมชั่นอื่นไม่ได้` +
+      (c.ers_hint ? `\nใส่ ${c.ers_hint} ที่ POS` : "");
   return send(replyToken, [{
     type: "template", altText: "ยืนยันใช้สิทธิ์",
     template: { type: "confirm", text: text.slice(0, 240),

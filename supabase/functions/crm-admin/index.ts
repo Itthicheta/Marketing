@@ -15,6 +15,10 @@
 // v14 (0027): rules take require_clean (default true).
 // v15 (0030, 2026-11-24): coupons carry a use window — use_from / use_to (HH:MM, Bangkok) and use_days (ISO 1–7);
 // template_save changes them only when the payload has use_days (the on/off switch sends none, so it keeps them).
+// v21 (2026-11-26, 0035): unique coupon codes. Templates carry ers_series_id + use_codes (template_save, edit form only);
+// rules_data adds ers_series, per-coupon code counts and recent batches; code_batch_create {template_id, n} makes n new
+// 8-digit codes (first digit 1-9, unique forever); code_batch_file {batch_id} returns the batch as an .xlsx (base64) for
+// the ERS import; codes_report {template_id} lists codes to check (shown, used, fraud, wrong series, off, used-not-ours).
 // v20 (2026-11-26, 0034): templates carry issue_from (first day a bill can earn) and use_until (fixed last use day; wins over valid_days).
 // v19 (2026-11-25, 0033): templates carry issue_until (last day a bill can earn the coupon); template_save sets it when sent.
 // v18 (2026-11-25, 0032): templates carry giftable (per-coupon gift switch); template_save sets it when the payload has it.
@@ -24,6 +28,7 @@
 // v13 (0026): a rule is by product (categories) OR by bill amount (min_spend), never both; multi = more than one coupon per bill.
 // v12: template_delete {id, withdraw?} (409 field "withdraw" while copies are still usable on cards), rule_delete {id}.
 import postgres from "npm:postgres@3.4.5";
+import * as XLSX from "npm:xlsx@0.18.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
 const FIXED_TOKEN = Deno.env.get("LINE_CHANNEL_ACCESS_TOKEN") ?? "";
@@ -113,7 +118,7 @@ class Rollback extends Error {}
 
 async function rulesData() {
   const today = sql`(now() at time zone 'Asia/Bangkok')::date`;
-  const templates = await sql`select t.id::int id, t.title, t.detail, t.start_after_days, t.valid_days, t.ers_hint, t.active, t.giftable, to_char(t.issue_until, 'YYYY-MM-DD') issue_until, to_char(t.issue_from, 'YYYY-MM-DD') issue_from, to_char(t.use_until, 'YYYY-MM-DD') use_until,
+  const templates = await sql`select t.id::int id, t.title, t.detail, t.start_after_days, t.valid_days, t.ers_hint, t.active, t.giftable, to_char(t.issue_until, 'YYYY-MM-DD') issue_until, to_char(t.issue_from, 'YYYY-MM-DD') issue_from, to_char(t.use_until, 'YYYY-MM-DD') use_until, t.ers_series_id, t.use_codes,
       to_char(t.use_from, 'HH24:MI') use_from, to_char(t.use_to, 'HH24:MI') use_to, coalesce(t.use_days, '{}')::int[] use_days,
       count(c.id)::int issued, count(c.redeemed_at)::int used,
       count(c.id) filter (where c.redeemed_at is null and c.valid_to < ${today})::int expired
@@ -138,7 +143,21 @@ async function rulesData() {
   const branches = await sql`select branch_id, name, coalesce(short, left(name, 2)) short from crm.branches
     where active order by coalesce(short_sort, 100 + sort)`;
   const menu = await sql`select item_id::int item_id, item_code, name, category from crm.pos_menu order by item_code nulls last, item_id`;
-  return { templates, rules, groups, line_members, branches, menu };
+  // 0035 coupon codes
+  const ers_series = await sql`select series_id, name, code, active, inside, to_char(expire_date, 'YYYY-MM-DD') expire_date, branch_ids,
+      to_char(synced_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') synced from crm.ers_coupon_series order by series_id desc`;
+  const code_counts = await sql`select template_id::int template_id, state, count(*)::int n from crm.coupon_code_state
+      where template_id is not null group by 1, 2`;
+  const not_ours = await sql`select t.id::int template_id, count(*)::int n from crm.coupon_templates t
+      join crm.ers_coupon_cards e on e.series_id = t.ers_series_id and e.used
+      where not exists (select 1 from crm.coupon_codes c where c.code = e.number) group by 1`;
+  const batches = await sql`select b.id::int id, b.template_id::int template_id, b.n, b.actor,
+      to_char(b.created_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') at,
+      (select count(*)::int from crm.coupon_code_state s where s.batch_id = b.id and s.state = 'pending') pending
+    from crm.code_batches b order by b.id desc limit 50`;
+  const [lw] = await sql`select value from crm.settings where key = 'code_low_warn'`;
+  return { templates, rules, groups, line_members, branches, menu, ers_series, code_counts, not_ours, batches,
+    code_low_warn: Number(lw?.value ?? 50) };
 }
 
 // validate a rule from the page; returns { res } (an error Response) or { r } (clean values)
@@ -386,11 +405,19 @@ async function write(op: string, f: any, actor: string) {
     if (isf && iu && isf > iu) return badField("issue_until", "วันสิ้นสุดรับต้องไม่ก่อนวันเริ่มรับ");
     if (uu && isf && uu < isf) return badField("use_until", "วันหมดอายุต้องไม่ก่อนวันเริ่มรับ");
     if (uu && iu && uu < iu) return badField("use_until", "วันหมดอายุต้องไม่ก่อนวันสิ้นสุดรับ");
+    const hasCodes = "use_codes" in f, useCodes = f.use_codes === true;   // 0035: edit form only
+    const ser = f.ers_series_id == null || f.ers_series_id === "" ? null : Number(f.ers_series_id);
+    if (hasCodes && ser !== null) {
+      const [x] = Number.isInteger(ser) ? await sql`select 1 from crm.ers_coupon_series where series_id = ${ser}` : [];
+      if (!x) return badField("ers_series_id", "ไม่พบชุดคูปองนี้ใน ERS");
+    }
+    if (hasCodes && useCodes && ser === null) return badField("ers_series_id", "เลือกชุดคูปองใน ERS ก่อนเปิดใช้รหัส");
     if (id) {
       if (gifts !== null) await sql`update crm.coupon_templates set giftable = ${gifts} where id = ${id}`;
       if (hasIu) await sql`update crm.coupon_templates set issue_until = ${iu}::date where id = ${id}`;
       if (hasIf) await sql`update crm.coupon_templates set issue_from = ${isf}::date where id = ${id}`;
       if (hasUu) await sql`update crm.coupon_templates set use_until = ${uu}::date where id = ${id}`;
+      if (hasCodes) await sql`update crm.coupon_templates set ers_series_id = ${ser}, use_codes = ${useCodes} where id = ${id}`;
       const u = win
         ? await sql`update crm.coupon_templates set title = ${title}, detail = ${detail}, start_after_days = ${sa},
             valid_days = ${vd}, ers_hint = ${hint}, active = ${active}, use_from = ${uf}::time, use_to = ${ut}::time,
@@ -399,13 +426,78 @@ async function write(op: string, f: any, actor: string) {
             valid_days = ${vd}, ers_hint = ${hint}, active = ${active}, updated_at = now() where id = ${id} returning id`;
       if (!u.length) return bad("not found", 404);
     } else {
-      [{ id }] = await sql`insert into crm.coupon_templates (title, detail, start_after_days, valid_days, ers_hint, active, use_from, use_to, use_days, giftable, issue_until, issue_from, use_until)
-          values (${title}, ${detail}, ${sa}, ${vd}, ${hint}, ${active}, ${uf}::time, ${ut}::time, ${ud}::smallint[], ${gifts ?? true}, ${iu}::date, ${isf}::date, ${uu}::date) returning id::int id`;
+      [{ id }] = await sql`insert into crm.coupon_templates (title, detail, start_after_days, valid_days, ers_hint, active, use_from, use_to, use_days, giftable, issue_until, issue_from, use_until, ers_series_id, use_codes)
+          values (${title}, ${detail}, ${sa}, ${vd}, ${hint}, ${active}, ${uf}::time, ${ut}::time, ${ud}::smallint[], ${gifts ?? true}, ${iu}::date, ${isf}::date, ${uu}::date, ${hasCodes ? ser : null}, ${hasCodes && useCodes}) returning id::int id`;
     }
     await log(actor, op, { id, title, detail, start_after_days: sa, valid_days: vd, ers_hint: hint, active,
       ...(win ? { use_from: uf, use_to: ut, use_days: ud } : {}), ...(gifts !== null ? { giftable: gifts } : {}), ...(hasIu ? { issue_until: iu } : {}),
-      ...(hasIf ? { issue_from: isf } : {}), ...(hasUu ? { use_until: uu } : {}) });
+      ...(hasIf ? { issue_from: isf } : {}), ...(hasUu ? { use_until: uu } : {}),
+      ...(hasCodes ? { ers_series_id: ser, use_codes: useCodes } : {}) });
     return Response.json({ ok: true, id });
+  }
+  if (op === "code_batch_create") {   // 0035: n new codes for a coupon (never shown anywhere until a staff tap)
+    const tid = Number(f.template_id), n = Number(f.n);
+    if (!Number.isInteger(n) || n < 1 || n > 2000) return badField("n", "จำนวนรหัส 1–2,000");
+    const [t] = Number.isInteger(tid) ? await sql`select t.title, t.ers_series_id, s.code from crm.coupon_templates t
+        left join crm.ers_coupon_series s on s.series_id = t.ers_series_id where t.id = ${tid}` : [];
+    if (!t) return bad("not found", 404);
+    if (t.ers_series_id == null) return badField("ers_series_id", "เลือกชุดคูปองใน ERS ก่อนสร้างรหัส");
+    let batchId = 0, made = 0;
+    await sql.begin(async (tx) => {
+      [{ id: batchId }] = await tx`insert into crm.code_batches (template_id, title, ers_series_id, n, actor)
+          values (${tid}, ${t.title}, ${t.ers_series_id}, ${n}, ${actor}) returning id::int id`;
+      for (let round = 0; made < n && round < 20; round++) {
+        const want = n - made, set = new Set<string>();
+        const buf = new Uint32Array(want * 2);
+        crypto.getRandomValues(buf);
+        for (let i = 0; i < buf.length && set.size < want; i += 2) {   // first digit 1-9, then 7 digits
+          set.add(String(1 + (buf[i] % 9)) + String(buf[i + 1] % 10_000_000).padStart(7, "0"));
+        }
+        const codes = [...set];
+        const ins = await tx`insert into crm.coupon_codes (code, template_id, batch_id)
+            select x, ${tid}, ${batchId} from unnest(${"{" + codes.join(",") + "}"}::text[]) x
+            where not exists (select 1 from crm.ers_coupon_cards e where e.number = x)
+            on conflict (code) do nothing returning code`;
+        made += ins.length;
+      }
+      if (made !== n) throw new Error("could not make enough unique codes");
+    });
+    await log(actor, op, { template_id: tid, title: t.title, batch_id: batchId, n });   // never the codes themselves
+    return Response.json({ ok: true, batch_id: batchId, n });
+  }
+  if (op === "code_batch_file") {     // the Excel file to import into the ERS series
+    const bid = Number(f.batch_id);
+    const [b] = Number.isInteger(bid) ? await sql`select b.id, b.title, b.n, s.code series_code, s.name series_name
+        from crm.code_batches b left join crm.ers_coupon_series s on s.series_id = b.ers_series_id where b.id = ${bid}` : [];
+    if (!b) return bad("not found", 404);
+    const rows = await sql`select code from crm.coupon_codes where batch_id = ${bid} order by code`;
+    const ws = XLSX.utils.aoa_to_sheet([["CouponNumber"], ...rows.map((r) => [String(r.code)])]);
+    for (let i = 0; i < rows.length; i++) { const c = ws[XLSX.utils.encode_cell({ r: i + 1, c: 0 })]; if (c) { c.t = "s"; c.z = "@"; } }
+    ws["!cols"] = [{ wch: 14 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "codes");
+    const safe = (x: string) => String(x ?? "").replace(/[\\/:*?"<>|\s]+/g, "");
+    const name = `${safe(b.title)}_${safe(b.series_code ?? "")}_ชุด${b.id}_${rows.length}รหัส.xlsx`;
+    await log(actor, op, { batch_id: bid, n: rows.length });
+    return Response.json({ ok: true, name, b64: XLSX.write(wb, { type: "base64", bookType: "xlsx" }) });
+  }
+  if (op === "codes_report") {        // codes worth a look for one coupon (newest first)
+    const tid = Number(f.template_id);
+    const rows = await sql`select s.code, s.state, s.batch_id::int batch_id,
+        to_char(s.shown_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') shown_at,
+        to_char(s.used_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') used_at, b.name used_branch, s.used_bill_no,
+        coalesce(m.full_name, m.display_name) member, m.phone
+      from crm.coupon_code_state s left join crm.coupons c on c.id = s.coupon_id
+      left join crm.line_members m on m.line_user_id = c.line_user_id
+      left join crm.branches b on b.branch_id = s.used_branch_id
+      where s.template_id = ${tid} and s.state not in ('ready', 'pending')
+      order by coalesce(s.used_at, s.shown_at) desc nulls last limit 300`;
+    const extra = await sql`select e.number code, 'not_ours' state, to_char(e.used_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') used_at,
+        b.name used_branch, e.used_bill_no from crm.ers_coupon_cards e join crm.coupon_templates t on t.ers_series_id = e.series_id
+      left join crm.branches b on b.branch_id = e.used_branch_id
+      where t.id = ${tid} and e.used and not exists (select 1 from crm.coupon_codes c where c.code = e.number)
+      order by e.used_at desc nulls last limit 100`;
+    return Response.json({ ok: true, rows: [...extra, ...rows] });
   }
   if (op === "pos_tick") {
     const key = String(f.key ?? ""), done = f.done === true;
