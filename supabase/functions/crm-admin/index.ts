@@ -15,6 +15,10 @@
 // v14 (0027): rules take require_clean (default true).
 // v15 (0030, 2026-11-24): coupons carry a use window — use_from / use_to (HH:MM, Bangkok) and use_days (ISO 1–7);
 // template_save changes them only when the payload has use_days (the on/off switch sends none, so it keeps them).
+// v23 (2026-11-26, 0037): batches carry match counts against ERS (matched / missing / wrong series / off / shown / used /
+// fraud / cancelled, cancelled-but-still-live-in-ERS) and the last ERS check time; code_batch_delete {batch_id, confirm?}
+// removes a batch outright when nothing reached ERS or LINE, else (with confirm) cancels it; code_batch_codes {batch_id}
+// lists a batch's codes with their state; codes_report also lists unused ERS codes in the series that we never made.
 // v22 (2026-11-26, 0036): code_batch_file writes ERS's own import layout (CouponCardList.xls, 8 columns, .xls);
 // image_upload {data (base64), type} stores a JPEG/PNG (max 1 MB) in the public Storage bucket crm-images and
 // returns its https link (LINE coupon / promotion pictures).
@@ -154,16 +158,24 @@ async function rulesData() {
       to_char(synced_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') synced from crm.ers_coupon_series order by series_id desc`;
   const code_counts = await sql`select template_id::int template_id, state, count(*)::int n from crm.coupon_code_state
       where template_id is not null group by 1, 2`;
-  const not_ours = await sql`select t.id::int template_id, count(*)::int n from crm.coupon_templates t
-      join crm.ers_coupon_cards e on e.series_id = t.ers_series_id and e.used
+  const not_ours = await sql`select t.id::int template_id, count(*) filter (where e.used)::int n, count(*)::int total
+      from crm.coupon_templates t join crm.ers_coupon_cards e on e.series_id = t.ers_series_id
       where not exists (select 1 from crm.coupon_codes c where c.code = e.number) group by 1`;
   const batches = await sql`select b.id::int id, b.template_id::int template_id, b.n, b.actor,
       to_char(b.created_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') at,
-      (select count(*)::int from crm.coupon_code_state s where s.batch_id = b.id and s.state = 'pending') pending
-    from crm.code_batches b order by b.id desc limit 50`;
+      to_char(b.cancelled_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') cancelled_at, b.cancelled_by,
+      count(s.code)::int codes, count(*) filter (where s.matched)::int matched,
+      count(*) filter (where s.state = 'pending')::int missing, count(*) filter (where s.state = 'wrong_series')::int wrong,
+      count(*) filter (where s.state = 'off')::int off, count(*) filter (where s.state = 'ready')::int ready,
+      count(*) filter (where s.shown_at is not null)::int shown, count(*) filter (where s.state = 'used')::int used,
+      count(*) filter (where s.state = 'fraud')::int fraud, count(*) filter (where s.state = 'cancelled')::int cancelled,
+      count(*) filter (where s.state = 'cancelled' and s.matched and s.ers_active and not s.ers_used)::int cancelled_live
+    from crm.code_batches b left join crm.coupon_code_state s on s.batch_id = b.id
+    group by b.id order by b.id desc limit 200`;
+  const [chk] = await sql`select to_char(max(synced_at) at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') at from crm.ers_coupon_series`;
   const [lw] = await sql`select value from crm.settings where key = 'code_low_warn'`;
   return { templates, rules, groups, line_members, branches, menu, ers_series, code_counts, not_ours, batches,
-    code_low_warn: Number(lw?.value ?? 50) };
+    code_low_warn: Number(lw?.value ?? 50), ers_checked: chk?.at ?? null };
 }
 
 // validate a rule from the page; returns { res } (an error Response) or { r } (clean values)
@@ -509,6 +521,37 @@ async function write(op: string, f: any, actor: string) {
     await log(actor, op, { batch_id: bid, n: rows.length });
     return Response.json({ ok: true, name, b64: XLSX.write(wb, { type: "base64", bookType: "biff8" }) });
   }
+  if (op === "code_batch_delete") {   // 0037: delete when nothing left our system, else cancel (needs confirm)
+    const bid = Number(f.batch_id);
+    const [b] = Number.isInteger(bid) ? await sql`select b.id, b.title, b.cancelled_at,
+        count(s.code) filter (where s.card_id is not null)::int in_ers, count(s.code) filter (where s.shown_at is not null)::int shown,
+        count(s.code) filter (where s.matched and s.ers_active and not s.ers_used and s.shown_at is null)::int live
+      from crm.code_batches b left join crm.coupon_code_state s on s.batch_id = b.id where b.id = ${bid} group by b.id` : [];
+    if (!b) return bad("not found", 404);
+    if (b.in_ers === 0 && b.shown === 0) {
+      await sql.begin(async (tx) => {
+        await tx`delete from crm.coupon_codes where batch_id = ${bid}`;
+        await tx`delete from crm.code_batches where id = ${bid}`;
+      });
+      await log(actor, op, { batch_id: bid, title: b.title, deleted: true });
+      return Response.json({ ok: true, deleted: true });
+    }
+    if (b.cancelled_at) return bad("ชุดนี้ยกเลิกไปแล้ว");
+    if (f.confirm !== true) return Response.json({ ok: false, field: "confirm", in_ers: b.in_ers, shown: b.shown, live: b.live,
+      error: `รหัสชุดนี้อยู่ใน ERS แล้ว ${b.in_ers} รหัส` + (b.shown ? ` · แสดงให้ลูกค้าไปแล้ว ${b.shown} รหัส` : "") }, { status: 409 });
+    await sql`update crm.code_batches set cancelled_at = now(), cancelled_by = ${actor} where id = ${bid}`;
+    await log(actor, op, { batch_id: bid, title: b.title, cancelled: true, in_ers: b.in_ers, shown: b.shown, live: b.live });
+    return Response.json({ ok: true, cancelled: true, live: b.live });
+  }
+  if (op === "code_batch_codes") {    // 0037: every code of one batch with its state (for the match check list)
+    const bid = Number(f.batch_id);
+    const rows = await sql`select s.code, s.state, s.matched, s.ers_active, s.ers_used,
+        to_char(s.shown_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') shown_at,
+        to_char(s.used_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') used_at, br.name used_branch, s.used_bill_no
+      from crm.coupon_code_state s left join crm.branches br on br.branch_id = s.used_branch_id
+      where s.batch_id = ${bid} order by s.matched, s.state, s.code limit 5000`;
+    return Response.json({ ok: true, rows });
+  }
   if (op === "image_upload") {        // 0036: picture -> public https link (bucket crm-images)
     const type = String(f.type ?? ""), ext = type === "image/png" ? "png" : type === "image/jpeg" ? "jpg" : "";
     if (!ext) return bad("รองรับเฉพาะรูป JPG หรือ PNG");
@@ -535,13 +578,14 @@ async function write(op: string, f: any, actor: string) {
       from crm.coupon_code_state s left join crm.coupons c on c.id = s.coupon_id
       left join crm.line_members m on m.line_user_id = c.line_user_id
       left join crm.branches b on b.branch_id = s.used_branch_id
-      where s.template_id = ${tid} and s.state not in ('ready', 'pending')
+      where s.template_id = ${tid} and s.state not in ('ready', 'pending', 'cancelled')
       order by coalesce(s.used_at, s.shown_at) desc nulls last limit 300`;
-    const extra = await sql`select e.number code, 'not_ours' state, to_char(e.used_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') used_at,
+    const extra = await sql`select e.number code, case when e.used then 'not_ours' else 'not_ours_idle' end state,
+        to_char(e.used_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') used_at,
         b.name used_branch, e.used_bill_no from crm.ers_coupon_cards e join crm.coupon_templates t on t.ers_series_id = e.series_id
       left join crm.branches b on b.branch_id = e.used_branch_id
-      where t.id = ${tid} and e.used and not exists (select 1 from crm.coupon_codes c where c.code = e.number)
-      order by e.used_at desc nulls last limit 100`;
+      where t.id = ${tid} and not exists (select 1 from crm.coupon_codes c where c.code = e.number)
+      order by e.used desc, e.used_at desc nulls last, e.number limit 200`;
     return Response.json({ ok: true, rows: [...extra, ...rows] });
   }
   if (op === "pos_tick") {
