@@ -15,6 +15,9 @@
 // v14 (0027): rules take require_clean (default true).
 // v15 (0030, 2026-11-24): coupons carry a use window — use_from / use_to (HH:MM, Bangkok) and use_days (ISO 1–7);
 // template_save changes them only when the payload has use_days (the on/off switch sends none, so it keeps them).
+// v22 (2026-11-26, 0036): code_batch_file writes ERS's own import layout (CouponCardList.xls, 8 columns, .xls);
+// image_upload {data (base64), type} stores a JPEG/PNG (max 1 MB) in the public Storage bucket crm-images and
+// returns its https link (LINE coupon / promotion pictures).
 // v21 (2026-11-26, 0035): unique coupon codes. Templates carry ers_series_id + use_codes (template_save, edit form only);
 // rules_data adds ers_series, per-coupon code counts and recent batches; code_batch_create {template_id, n} makes n new
 // 8-digit codes (first digit 1-9, unique forever); code_batch_file {batch_id} returns the batch as an .xlsx (base64) for
@@ -34,6 +37,9 @@ const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 
 const FIXED_TOKEN = Deno.env.get("LINE_CHANNEL_ACCESS_TOKEN") ?? "";
 const CHANNEL_ID = Deno.env.get("LINE_CHANNEL_ID") ?? "";
 const CHANNEL_SECRET = Deno.env.get("LINE_CHANNEL_SECRET") ?? "";
+const SB_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SB_SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const ERS_COUPON_TYPE: Record<number, string> = { 1: "Cash Card" };   // CouponSeries.CouponType -> label in ERS's file (seen 2026-11-26)
 
 // settings the page may change (everything else in crm.settings is wiring, not config)
 const EDITABLE: Record<string, (v: string) => boolean> = {
@@ -467,19 +473,58 @@ async function write(op: string, f: any, actor: string) {
   }
   if (op === "code_batch_file") {     // the Excel file to import into the ERS series
     const bid = Number(f.batch_id);
-    const [b] = Number.isInteger(bid) ? await sql`select b.id, b.title, b.n, s.code series_code, s.name series_name
+    const [b] = Number.isInteger(bid) ? await sql`select b.id, b.title, b.n, s.code series_code, s.name series_name, s.coupon_type,
+        s.is_percent, s.discount_percent::float discount_percent, s.discount_amount::float discount_amount, s.cash_amount::float cash_amount, s.expire_at
         from crm.code_batches b left join crm.ers_coupon_series s on s.series_id = b.ers_series_id where b.id = ${bid}` : [];
     if (!b) return bad("not found", 404);
+    if (!b.series_name) return bad("ไม่พบชุดคูปองนี้ใน ERS (รอซิงก์รอบถัดไป)");
+    const typ = ERS_COUPON_TYPE[Number(b.coupon_type)];
+    if (!typ) return bad(`ยังไม่รู้ชื่อชนิดคูปอง (CouponType ${b.coupon_type}) ในไฟล์ ERS`);
+    const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(String(b.expire_at ?? ""));
+    if (!m) return bad("ชุดคูปองใน ERS ไม่มีวันหมดอายุ");
+    // ERS wall clock -> Excel serial (days since 1899-12-30)
+    const serial = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) / 864e5 + 25569;
     const rows = await sql`select code from crm.coupon_codes where batch_id = ${bid} order by code`;
-    const ws = XLSX.utils.aoa_to_sheet([["CouponNumber"], ...rows.map((r) => [String(r.code)])]);
-    for (let i = 0; i < rows.length; i++) { const c = ws[XLSX.utils.encode_cell({ r: i + 1, c: 0 })]; if (c) { c.t = "s"; c.z = "@"; } }
-    ws["!cols"] = [{ wch: 14 }];
+    // the layout of ERS's own CouponCardList.xls (Point 2026-11-26)
+    const ws: any = {};
+    const H = ["CouponNumber", "ExpireDate", "CouponSeriesName", "CouponType", "IsPercentDiscount", "DiscountPercent", "DiscountAmount", "CashAmount"];
+    H.forEach((h, c) => { ws[XLSX.utils.encode_cell({ r: 0, c })] = { t: "s", v: h }; });
+    rows.forEach((r, i) => {
+      const R = i + 1, cell = (c: number, v: any) => { ws[XLSX.utils.encode_cell({ r: R, c })] = v; };
+      cell(0, { t: "s", v: String(r.code), z: "@" });
+      cell(1, { t: "n", v: serial, z: "m/d/yy h:mm" });
+      cell(2, { t: "s", v: b.series_name });
+      cell(3, { t: "s", v: typ });
+      cell(4, { t: "b", v: b.is_percent === true });
+      cell(5, { t: "n", v: (Number(b.discount_percent) || 0) / 100, z: "0%" });
+      cell(6, { t: "s", v: String(Number(b.discount_amount) || 0) });
+      cell(7, { t: "s", v: String(Number(b.cash_amount) || 0) });
+    });
+    ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length, c: H.length - 1 } });
+    ws["!cols"] = [{ wch: 14 }, { wch: 16 }, { wch: 22 }, { wch: 11 }, { wch: 9 }, { wch: 9 }, { wch: 9 }, { wch: 9 }];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "codes");
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
     const safe = (x: string) => String(x ?? "").replace(/[\\/:*?"<>|\s]+/g, "");
-    const name = `${safe(b.title)}_${safe(b.series_code ?? "")}_ชุด${b.id}_${rows.length}รหัส.xlsx`;
+    const name = `${safe(b.title)}_${safe(b.series_code ?? "")}_ชุด${b.id}_${rows.length}รหัส.xls`;
     await log(actor, op, { batch_id: bid, n: rows.length });
-    return Response.json({ ok: true, name, b64: XLSX.write(wb, { type: "base64", bookType: "xlsx" }) });
+    return Response.json({ ok: true, name, b64: XLSX.write(wb, { type: "base64", bookType: "biff8" }) });
+  }
+  if (op === "image_upload") {        // 0036: picture -> public https link (bucket crm-images)
+    const type = String(f.type ?? ""), ext = type === "image/png" ? "png" : type === "image/jpeg" ? "jpg" : "";
+    if (!ext) return bad("รองรับเฉพาะรูป JPG หรือ PNG");
+    let bytes: Uint8Array;
+    try { bytes = Uint8Array.from(atob(String(f.data ?? "")), (ch) => ch.charCodeAt(0)); } catch { return bad("ไฟล์รูปไม่ถูกต้อง"); }
+    if (bytes.length < 100) return bad("ไฟล์รูปไม่ถูกต้อง");
+    if (bytes.length > 1048576) return bad("รูปใหญ่เกิน 1 MB");
+    const okSig = ext === "png" ? bytes[0] === 0x89 && bytes[1] === 0x50 : bytes[0] === 0xff && bytes[1] === 0xd8;
+    if (!okSig) return bad("ไฟล์ไม่ใช่รูป JPG / PNG");
+    const path = `${new Date().toISOString().slice(0, 7)}/${crypto.randomUUID()}.${ext}`;
+    const r = await fetch(`${SB_URL}/storage/v1/object/crm-images/${path}`, { method: "POST",
+      headers: { Authorization: `Bearer ${SB_SERVICE}`, "Content-Type": type, "x-upsert": "false", "cache-control": "31536000" }, body: bytes });
+    if (!r.ok) return bad(`อัปโหลดไม่สำเร็จ (${r.status})`, 502);
+    const url = `${SB_URL}/storage/v1/object/public/crm-images/${path}`;
+    await log(actor, op, { path, bytes: bytes.length });
+    return Response.json({ ok: true, url });
   }
   if (op === "codes_report") {        // codes worth a look for one coupon (newest first)
     const tid = Number(f.template_id);

@@ -20,6 +20,7 @@
 // v14 (2026-11-26, 0035): optional `ers_coupons` {series, cards} = ERS coupon series + every coupon code ERS holds
 // (number, active, used, used_at, branch, order / bill). Replaces crm.ers_coupon_series / crm.ers_coupon_cards, which
 // gate which of our generated codes can be handed out and confirm the ones staff showed. Never blocks the points sync.
+// v15 (0036): series also carry coupon_type, is_percent, discount_percent, discount_amount, cash_amount, expire_at (for the ERS import file).
 import postgres from "npm:postgres@3.4.5";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
@@ -165,14 +166,20 @@ Deno.serve(async (req) => {
             const ser = ers_coupons.series.filter((x: any) => int(x.series_id) !== null).map((x: any) => ({
               series_id: int(x.series_id), name: x.name ?? null, code: x.code ?? null, active: x.active === true, inside: x.inside === true,
               start_date: x.start_date ? String(x.start_date).slice(0, 10) : null, expire_date: x.expire_date ? String(x.expire_date).slice(0, 10) : null,
-              branch_ids: "{" + (Array.isArray(x.branch_ids) ? x.branch_ids : []).map(int).filter((b: any) => b !== null).join(",") + "}" }));
+              branch_ids: "{" + (Array.isArray(x.branch_ids) ? x.branch_ids : []).map(int).filter((b: any) => b !== null).join(",") + "}",
+              coupon_type: int(x.coupon_type), is_percent: x.is_percent === true,
+              discount_percent: Number.isFinite(Number(x.discount_percent)) && x.discount_percent !== null ? Number(x.discount_percent) : null,
+              discount_amount: Number.isFinite(Number(x.discount_amount)) && x.discount_amount !== null ? Number(x.discount_amount) : null,
+              cash_amount: Number.isFinite(Number(x.cash_amount)) && x.cash_amount !== null ? Number(x.cash_amount) : null,
+              expire_at: x.expire_at ? String(x.expire_at).slice(0, 19) : null }));
             const cards = ers_coupons.cards.filter((x: any) => int(x.card_id) !== null && x.number).map((x: any) => ({
               card_id: int(x.card_id), series_id: int(x.series_id), number: String(x.number).trim(), active: x.active === true,
               expire_date: x.expire_date ? String(x.expire_date).slice(0, 10) : null, used: x.used === true, used_at: x.used_at ?? null,
               used_branch_id: int(x.used_branch_id), used_order_id: x.used_order_id ?? null, used_bill_no: x.used_bill_no ?? null,
               inserted_at: x.inserted_at ?? null }));
             await sp`delete from crm.ers_coupon_series`;
-            if (ser.length) await sp`insert into crm.ers_coupon_series ${sp(ser, "series_id", "name", "code", "active", "inside", "start_date", "expire_date", "branch_ids")}`;
+            if (ser.length) await sp`insert into crm.ers_coupon_series ${sp(ser, "series_id", "name", "code", "active", "inside", "start_date", "expire_date", "branch_ids",
+              "coupon_type", "is_percent", "discount_percent", "discount_amount", "cash_amount", "expire_at")}`;
             await sp`delete from crm.ers_coupon_cards`;
             for (let i = 0; i < cards.length; i += 500) {
               await sp`insert into crm.ers_coupon_cards ${sp(cards.slice(i, i + 500), "card_id", "series_id", "number", "active", "expire_date",
