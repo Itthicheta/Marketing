@@ -186,3 +186,11 @@ quota. LINE gives no per-person usage data for these coupons; totals are in OA M
   - Two-way match: our codes -> ERS (matched = same number in the coupon's ERS series); ERS -> ours ("ใน ERS ชุดนี้มีรหัสที่ไม่ได้สร้างจากระบบ N", listed in ดูรหัสที่ต้องตรวจ as not_ours / not_ours_idle). ERS itself does not check against us.
   - ลบ: nothing in ERS and nothing shown -> batch + codes deleted. Otherwise a second confirm -> batch CANCELLED (code_batches.cancelled_at): its unshown codes become state cancelled and are never handed out (redeem_with_code skips cancelled batches); the row shows how many are still on in ERS so Point switches them off there.
   - Seen 2026-11-26: Point linked ลด 40% จานหลัก (16) to ERS series 8, switched codes on, and made batches 3 and 4 (300 each, 10:44 / 10:47 — probably one extra). Test batch 5 deleted; batch 2 (3 codes, TEST) kept for the import test.
+- **2026-11-26 — codes box cleanup (UI only, sales 5717a78; supersedes the column list above).** Point found the box messy. Now, top to bottom:
+  1. Header: รหัสคูปอง · ใช้รหัส/ไม่ใช้รหัส · ERS series · "ตรวจกับ ERS ล่าสุด <time> · ตรวจอัตโนมัติทุก ~30 นาที".
+  2. Three tiles: พร้อมใช้ · รอนำเข้า ERS · กดใช้แล้ว (sub-line "ERS ยืนยัน N").
+  3. One red box listing each problem, with what to do under it: no ready codes (hidden while a batch is still waiting for import) / running low / series off or on at no branch / wrong series / switched off in ERS / used in ERS without a LINE tap / codes in the ERS series we did not make / batch partly missing / cancelled batch still on in ERS.
+  4. One amber "→ ขั้นต่อไป" line: make the first batch, or "กด ⬇ Excel ของชุด N แล้วนำเข้า ERS ชุด X", or switch on ใช้รหัส.
+  5. สร้างรหัสใหม่ [n] รหัส [สร้างรหัส] · ดูรหัสที่มีปัญหา (was ดูรหัสที่ต้องตรวจ).
+  6. Batch table: ชุด · สร้างเมื่อ · อยู่ใน ERS (n / total) · กดใช้แล้ว · status pill (✓ ครบ พร้อมใช้ / รอนำเข้า ERS / มีปัญหา / ยกเลิกแล้ว) · ⬇ Excel · ดูรหัส/ซ่อนรหัส · ลบ.
+  - Code-state words: shown = "กดใช้แล้ว · รอ ERS ยืนยัน"; used = "ใช้แล้ว · ERS ยืนยัน"; wrong_series = "อยู่ผิดชุดใน ERS" (the code is in ERS, but in a different CouponSeries than the one linked to the coupon); off = "ถูกปิดใน ERS" (the CouponCard is inactive in ERS). The system hands out neither.
