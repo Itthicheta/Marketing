@@ -15,6 +15,7 @@
 // v14 (0027): rules take require_clean (default true).
 // v15 (0030, 2026-11-24): coupons carry a use window — use_from / use_to (HH:MM, Bangkok) and use_days (ISO 1–7);
 // template_save changes them only when the payload has use_days (the on/off switch sends none, so it keeps them).
+// v20 (2026-11-26, 0034): templates carry issue_from (first day a bill can earn) and use_until (fixed last use day; wins over valid_days).
 // v19 (2026-11-25, 0033): templates carry issue_until (last day a bill can earn the coupon); template_save sets it when sent.
 // v18 (2026-11-25, 0032): templates carry giftable (per-coupon gift switch); template_save sets it when the payload has it.
 // v17 (2026-11-25, 0031): members -> coupons[].gift_from ("name · phone" of the sender) and gifts_out[] (coupon gifts sent).
@@ -112,7 +113,7 @@ class Rollback extends Error {}
 
 async function rulesData() {
   const today = sql`(now() at time zone 'Asia/Bangkok')::date`;
-  const templates = await sql`select t.id::int id, t.title, t.detail, t.start_after_days, t.valid_days, t.ers_hint, t.active, t.giftable, to_char(t.issue_until, 'YYYY-MM-DD') issue_until,
+  const templates = await sql`select t.id::int id, t.title, t.detail, t.start_after_days, t.valid_days, t.ers_hint, t.active, t.giftable, to_char(t.issue_until, 'YYYY-MM-DD') issue_until, to_char(t.issue_from, 'YYYY-MM-DD') issue_from, to_char(t.use_until, 'YYYY-MM-DD') use_until,
       to_char(t.use_from, 'HH24:MI') use_from, to_char(t.use_to, 'HH24:MI') use_to, coalesce(t.use_days, '{}')::int[] use_days,
       count(c.id)::int issued, count(c.redeemed_at)::int used,
       count(c.id) filter (where c.redeemed_at is null and c.valid_to < ${today})::int expired
@@ -378,9 +379,18 @@ async function write(op: string, f: any, actor: string) {
     const gifts = "giftable" in f ? f.giftable === true : null;   // 0032: only the edit form sends it
     const hasIu = "issue_until" in f, iu = f.issue_until ? String(f.issue_until) : null;   // 0033: edit form only
     if (iu && !DAY.test(iu)) return badField("issue_until", "วันที่ไม่ถูกต้อง");
+    const hasIf = "issue_from" in f, isf = f.issue_from ? String(f.issue_from) : null;   // 0034: edit form only
+    const hasUu = "use_until" in f, uu = f.use_until ? String(f.use_until) : null;
+    if (isf && !DAY.test(isf)) return badField("issue_from", "วันที่ไม่ถูกต้อง");
+    if (uu && !DAY.test(uu)) return badField("use_until", "วันที่ไม่ถูกต้อง");
+    if (isf && iu && isf > iu) return badField("issue_until", "วันสิ้นสุดรับต้องไม่ก่อนวันเริ่มรับ");
+    if (uu && isf && uu < isf) return badField("use_until", "วันหมดอายุต้องไม่ก่อนวันเริ่มรับ");
+    if (uu && iu && uu < iu) return badField("use_until", "วันหมดอายุต้องไม่ก่อนวันสิ้นสุดรับ");
     if (id) {
       if (gifts !== null) await sql`update crm.coupon_templates set giftable = ${gifts} where id = ${id}`;
       if (hasIu) await sql`update crm.coupon_templates set issue_until = ${iu}::date where id = ${id}`;
+      if (hasIf) await sql`update crm.coupon_templates set issue_from = ${isf}::date where id = ${id}`;
+      if (hasUu) await sql`update crm.coupon_templates set use_until = ${uu}::date where id = ${id}`;
       const u = win
         ? await sql`update crm.coupon_templates set title = ${title}, detail = ${detail}, start_after_days = ${sa},
             valid_days = ${vd}, ers_hint = ${hint}, active = ${active}, use_from = ${uf}::time, use_to = ${ut}::time,
@@ -389,11 +399,12 @@ async function write(op: string, f: any, actor: string) {
             valid_days = ${vd}, ers_hint = ${hint}, active = ${active}, updated_at = now() where id = ${id} returning id`;
       if (!u.length) return bad("not found", 404);
     } else {
-      [{ id }] = await sql`insert into crm.coupon_templates (title, detail, start_after_days, valid_days, ers_hint, active, use_from, use_to, use_days, giftable, issue_until)
-          values (${title}, ${detail}, ${sa}, ${vd}, ${hint}, ${active}, ${uf}::time, ${ut}::time, ${ud}::smallint[], ${gifts ?? true}, ${iu}::date) returning id::int id`;
+      [{ id }] = await sql`insert into crm.coupon_templates (title, detail, start_after_days, valid_days, ers_hint, active, use_from, use_to, use_days, giftable, issue_until, issue_from, use_until)
+          values (${title}, ${detail}, ${sa}, ${vd}, ${hint}, ${active}, ${uf}::time, ${ut}::time, ${ud}::smallint[], ${gifts ?? true}, ${iu}::date, ${isf}::date, ${uu}::date) returning id::int id`;
     }
     await log(actor, op, { id, title, detail, start_after_days: sa, valid_days: vd, ers_hint: hint, active,
-      ...(win ? { use_from: uf, use_to: ut, use_days: ud } : {}), ...(gifts !== null ? { giftable: gifts } : {}), ...(hasIu ? { issue_until: iu } : {}) });
+      ...(win ? { use_from: uf, use_to: ut, use_days: ud } : {}), ...(gifts !== null ? { giftable: gifts } : {}), ...(hasIu ? { issue_until: iu } : {}),
+      ...(hasIf ? { issue_from: isf } : {}), ...(hasUu ? { use_until: uu } : {}) });
     return Response.json({ ok: true, id });
   }
   if (op === "pos_tick") {
